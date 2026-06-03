@@ -171,6 +171,19 @@ pub enum PageVisibility {
     Shared,
 }
 
+/// Initial page import metadata for isolated partitions.
+#[derive(Eq, PartialEq, Debug, Clone)]
+pub struct InitialPageImport {
+    /// The guest physical range being imported.
+    pub range: MemoryRange,
+    /// The generic visibility requested for the page range.
+    pub visibility: PageVisibility,
+    /// The loader acceptance type used to import this range.
+    pub acceptance: loader::importer::BootPageAcceptance,
+    /// Loader-provided debug tag identifying the source of this range.
+    pub tag: String,
+}
+
 /// Prototype partition creation configuration.
 pub struct ProtoPartitionConfig<'a> {
     /// The set of VPs to create.
@@ -299,9 +312,9 @@ pub struct HvConfig {
 
 /// Methods for manipulating a VM partition.
 pub trait Partition: 'static + Hv1 + Inspect + Send + Sync {
-    /// Returns a trait object to accept pages on behalf of the guest during the
-    /// initial start import flow.
-    fn supports_initial_accept_pages(
+    /// Returns a trait object for initial page imports during the initial start
+    /// flow.
+    fn supports_initial_page_acceptance(
         &self,
     ) -> Option<&dyn AcceptInitialPages<Error = <Self as Hv1>::Error>> {
         None
@@ -388,10 +401,7 @@ pub trait AcceptInitialPages {
     /// accept pages on behalf of the guest that were set as part of the load
     /// process. The host virtstack cannot accept pages on behalf of the guest
     /// once it has started running.
-    fn accept_initial_pages(
-        &self,
-        pages: &[(MemoryRange, PageVisibility)],
-    ) -> Result<(), Self::Error>;
+    fn accept_initial_pages(&self, pages: &[InitialPageImport]) -> Result<(), Self::Error>;
 }
 
 /// Extension trait for resetting the partition.
