@@ -109,7 +109,58 @@ pub struct EcdsaPublicKeyInner {
     curve: EcdsaCurve,
 }
 
+impl Drop for EcdsaPublicKeyInner {
+    fn drop(&mut self) {
+        // Only an owned public key (constructed via `new`) reaches here; a
+        // public view obtained by transmuting a keypair reference is never
+        // dropped as an `EcdsaPublicKeyInner`, so the keypair's handle is not
+        // double-freed.
+        if !self.handle.is_invalid() {
+            // SAFETY: handle is valid and owned by this struct.
+            let _ = unsafe { BCryptDestroyKey(self.handle) };
+        }
+    }
+}
+
 impl EcdsaPublicKeyInner {
+    pub fn new(curve: EcdsaCurve, public_key: &[u8]) -> Result<Self, EcdsaError> {
+        let alg = alg_handle(curve)?;
+        let key_size = curve.key_size();
+
+        // Enforce the exact `Qx || Qy` length so all backends reject
+        // non-canonical encodings identically (the OpenSSL backend does the
+        // same before constructing its point).
+        if public_key.len() != key_size * 2 {
+            return Err(err(
+                windows::core::Error::new(
+                    windows::Win32::Foundation::E_INVALIDARG,
+                    "ECDSA public key is not the expected length (Qx || Qy)",
+                ),
+                "validating ECDSA public key length",
+            ));
+        }
+
+        let magic = match curve {
+            EcdsaCurve::P384 => BCRYPT_ECDSA_PUBLIC_P384_MAGIC,
+        };
+
+        // Build a BCRYPT_ECCKEY_BLOB: { dwMagic: u32, cbKey: u32 } header (both
+        // little-endian) followed by Qx || Qy.
+        let mut blob = Vec::with_capacity(size_of::<BCRYPT_ECCKEY_BLOB>() + public_key.len());
+        blob.extend_from_slice(&magic.to_le_bytes());
+        blob.extend_from_slice(&(key_size as u32).to_le_bytes());
+        blob.extend_from_slice(public_key);
+
+        let mut handle = BCRYPT_KEY_HANDLE::default();
+        // SAFETY: FFI import with a valid algorithm handle and a correctly
+        // formatted public key blob.
+        unsafe { BCryptImportKeyPair(alg.0, None, BCRYPT_ECCPUBLIC_BLOB, &mut handle, &blob, 0) }
+            .ok()
+            .map_err(|e| err(e, "BCryptImportKeyPair"))?;
+
+        Ok(Self { handle, curve })
+    }
+
     pub fn verify_prehash(&self, hash: &[u8], signature: &[u8]) -> Result<bool, EcdsaError> {
         // A signature must be exactly `r || s`, each `curve.key_size()` bytes.
         if signature.len() != self.curve.key_size() * 2 {

@@ -42,6 +42,28 @@ pub struct EcdsaPublicKeyInner {
 }
 
 impl EcdsaPublicKeyInner {
+    pub fn new(curve: EcdsaCurve, public_key: &[u8]) -> Result<Self, EcdsaError> {
+        // Enforce the exact `Qx || Qy` length so all backends reject
+        // non-canonical encodings identically (the OpenSSL backend does the
+        // same before constructing its point).
+        if public_key.len() != curve.key_size() * 2 {
+            return Err(err(
+                symcrypt::errors::SymCryptError::InvalidArgument,
+                "validating ECDSA public key length",
+            ));
+        }
+        let curve_type = match curve {
+            EcdsaCurve::P384 => symcrypt::ecc::CurveType::NistP384,
+        };
+        let key = symcrypt::ecc::EcKey::set_public_key(
+            curve_type,
+            public_key,
+            symcrypt::ecc::EcKeyUsage::EcDsa,
+        )
+        .map_err(|e| err(e, "importing public key"))?;
+        Ok(Self { key })
+    }
+
     pub fn verify_prehash(&self, hash: &[u8], signature: &[u8]) -> Result<bool, EcdsaError> {
         match self.key.ecdsa_verify(signature, hash) {
             Ok(()) => Ok(true),
