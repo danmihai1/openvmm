@@ -9822,6 +9822,7 @@ dependencies = [
  "task_control",
  "tempfile",
  "test_with_tracing",
+ "tracelimit",
  "tracing",
  "virtio",
  "virtio_resources",
