@@ -67,6 +67,44 @@ pub struct EcdsaPublicKeyInner {
 }
 
 impl EcdsaPublicKeyInner {
+    pub fn new(curve: EcdsaCurve, public_key: &[u8]) -> Result<Self, EcdsaError> {
+        let key_size = curve.key_size();
+        let nid = match curve {
+            EcdsaCurve::P384 => openssl::nid::Nid::SECP384R1,
+        };
+        let group =
+            openssl::ec::EcGroup::from_curve_name(nid).map_err(|e| err(e, "creating EC group"))?;
+        let mut ctx =
+            openssl::bn::BigNumContext::new().map_err(|e| err(e, "creating BigNumContext"))?;
+
+        // `Qx || Qy`, each `key_size` bytes, big-endian. Enforce the exact
+        // length so a non-canonical encoding (e.g. a short `Qy` with its
+        // leading zero bytes omitted) cannot be silently accepted.
+        if public_key.len() != key_size * 2 {
+            return Err(err(
+                openssl::error::ErrorStack::get(),
+                "ECDSA public key is not the expected length (Qx || Qy)",
+            ));
+        }
+        let (qx, qy) = public_key.split_at(key_size);
+        let x = openssl::bn::BigNum::from_slice(qx).map_err(|e| err(e, "parsing Qx"))?;
+        let y = openssl::bn::BigNum::from_slice(qy).map_err(|e| err(e, "parsing Qy"))?;
+        let mut point =
+            openssl::ec::EcPoint::new(&group).map_err(|e| err(e, "creating EcPoint"))?;
+        point
+            .set_affine_coordinates_gfp(&group, &x, &y, &mut ctx)
+            .map_err(|e| err(e, "setting affine coordinates"))?;
+        let ec_key = openssl::ec::EcKey::from_public_key(&group, &point)
+            .map_err(|e| err(e, "constructing EC public key"))?;
+        ec_key
+            .check_key()
+            .map_err(|e| err(e, "validating EC public key"))?;
+        let pkey = openssl::pkey::PKey::from_ec_key(ec_key)
+            .map_err(|e| err(e, "converting EC key to PKey"))?;
+
+        Ok(Self { pkey, curve })
+    }
+
     pub fn verify_prehash(&self, hash: &[u8], signature: &[u8]) -> Result<bool, EcdsaError> {
         let key_size = self.curve.key_size();
         // A signature must be exactly `r || s`, each `key_size` bytes. Any
