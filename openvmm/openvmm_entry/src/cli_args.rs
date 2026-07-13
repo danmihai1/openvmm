@@ -135,10 +135,10 @@ Size suffixes accept K, M, G, and T, optionally followed by B.
 Options:
     size=<SIZE>              guest RAM size, default 1GB
     shared=on|off            use shared file-backed RAM, default on
-    prefetch=on|off          pre-populate shared RAM mappings
+    prefetch=on|off          pre-populate guest RAM mappings
     thp=on|off               mark private RAM as THP-eligible; requires shared=off
-    hugepages=on|off         allocate RAM from Linux hugetlb pages
-    hugepage_size=<SIZE>     hugetlb page size, default 2MB; requires hugepages=on
+    hugepages=on|off         allocate RAM from hugetlb/large pages (Linux, Windows)
+    hugepage_size=<SIZE>     hugepage size, default 2MB; requires hugepages=on
     file=<PATH>              use an existing file as guest RAM backing
 
 Examples:
@@ -165,10 +165,10 @@ Syntax: key=value[,key=value...]
 Options:
     size=<SIZE>              RAM for this node (required)
     shared=on|off            use shared file-backed RAM, default on
-    prefetch=on|off          pre-populate shared RAM mappings
+    prefetch=on|off          pre-populate guest RAM mappings
     thp=on|off               mark private RAM as THP-eligible; requires shared=off
-    hugepages=on|off         allocate RAM from hugetlb pages
-    hugepage_size=<SIZE>     hugetlb page size; requires hugepages=on
+    hugepages=on|off         allocate RAM from hugetlb/large pages (Linux, Windows)
+    hugepage_size=<SIZE>     hugepage size, default 2MB; requires hugepages=on
     host_numa_node=<N>       bind allocation to host NUMA node N
     vps=<LIST>               explicit VP indices (e.g. "[0,1,2,3]")
 
@@ -1275,8 +1275,8 @@ impl Options {
             anyhow::bail!("transparent huge pages requires private memory mode");
         }
         if self.memory.hugepages {
-            if !cfg!(target_os = "linux") {
-                anyhow::bail!("hugepages are only supported on Linux");
+            if !cfg!(any(target_os = "linux", target_os = "windows")) {
+                anyhow::bail!("hugepages are only supported on Linux and Windows");
             }
             if self.private_memory() {
                 anyhow::bail!("hugepages conflict with private memory");
