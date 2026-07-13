@@ -65,6 +65,7 @@ pub struct Config {
     /// allow the guest to reset without notifying the client
     pub automatic_guest_reset: bool,
     pub efi_diagnostics_log_level: EfiDiagnosticsLogLevelType,
+    pub base_secure_boot_template_vars: firmware_uefi_custom_vars::CustomVars,
 }
 
 pub const DEFAULT_GIC_DISTRIBUTOR_BASE: u64 = 0xFFFF_0000;

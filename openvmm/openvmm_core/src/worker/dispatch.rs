@@ -227,6 +227,7 @@ impl Manifest {
                 EfiDiagnosticsLogLevelType::Info => LogLevel::make_info(),
                 EfiDiagnosticsLogLevelType::Full => LogLevel::make_full(),
             },
+            base_secure_boot_template_vars: config.base_secure_boot_template_vars,
         }
     }
 }
@@ -274,6 +275,7 @@ pub struct Manifest {
     rtc_delta_milliseconds: i64,
     automatic_guest_reset: bool,
     efi_diagnostics_log_level: LogLevel,
+    base_secure_boot_template_vars: firmware_uefi_custom_vars::CustomVars,
 }
 
 #[derive(Protobuf, SavedStateRoot)]
@@ -3942,6 +3944,7 @@ impl LoadedVm {
             rtc_delta_milliseconds: 0, // TODO
             automatic_guest_reset: self.inner.automatic_guest_reset,
             efi_diagnostics_log_level: Default::default(),
+            base_secure_boot_template_vars: Default::default(), // TODO
         };
         #[expect(unreachable_code, reason = "TODO")]
         RestartState {
