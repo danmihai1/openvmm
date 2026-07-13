@@ -76,7 +76,7 @@ pub struct MemoryCli {
     pub shared: Option<bool>,
     /// Whether to prefetch guest RAM.
     pub prefetch: bool,
-    /// Whether to use transparent huge pages for private guest RAM.
+    /// Whether to use transparent huge pages for guest RAM.
     pub transparent_hugepages: bool,
     /// Whether to use explicit hugetlb memfd backing for guest RAM.
     pub hugepages: bool,
@@ -136,7 +136,7 @@ Options:
     size=<SIZE>              guest RAM size, default 1GB
     shared=on|off            use shared file-backed RAM, default on
     prefetch=on|off          pre-populate shared RAM mappings
-    thp=on|off               mark private RAM as THP-eligible; requires shared=off
+    thp=on|off               mark guest RAM as THP-eligible (Linux), default on
     hugepages=on|off         allocate RAM from Linux hugetlb pages
     hugepage_size=<SIZE>     hugetlb page size, default 2MB; requires hugepages=on
     file=<PATH>              use an existing file as guest RAM backing
@@ -145,7 +145,7 @@ Examples:
     --memory 4G
     --memory size=64GB,hugepages=on,hugepage_size=2MB
     --memory size=4G,file=path/to/memory.bin
-    --memory size=4G,shared=off,thp=on"#
+    --memory size=4G,thp=off"#
     )]
     pub memory: MemoryCli,
 
@@ -166,7 +166,7 @@ Options:
     size=<SIZE>              RAM for this node (required)
     shared=on|off            use shared file-backed RAM, default on
     prefetch=on|off          pre-populate shared RAM mappings
-    thp=on|off               mark private RAM as THP-eligible; requires shared=off
+    thp=on|off               mark node RAM as THP-eligible (Linux), default on
     hugepages=on|off         allocate RAM from hugetlb pages
     hugepage_size=<SIZE>     hugetlb page size; requires hugepages=on
     host_numa_node=<N>       bind allocation to host NUMA node N
@@ -225,7 +225,7 @@ Examples:
     #[clap(long = "private-memory", hide = true, conflicts_with_all = ["deprecated_memory_backing_file", "restore_snapshot", "numa"])]
     pub deprecated_private_memory: bool,
 
-    /// enable transparent huge pages for guest RAM (Linux only, requires --private-memory)
+    /// enable transparent huge pages for guest RAM (Linux only; deprecated, THP is on by default)
     #[clap(long = "thp", hide = true, conflicts_with = "numa")]
     pub deprecated_thp: bool,
 
@@ -1271,9 +1271,6 @@ impl Options {
         if self.memory_backing_file().is_some() && self.private_memory() {
             anyhow::bail!("file-backed memory conflicts with private memory");
         }
-        if self.transparent_hugepages() && !self.private_memory() {
-            anyhow::bail!("transparent huge pages requires private memory mode");
-        }
         if self.memory.hugepages {
             if !cfg!(target_os = "linux") {
                 anyhow::bail!("hugepages are only supported on Linux");
@@ -1542,9 +1539,6 @@ impl MemoryOptionAccum {
 
     /// Validate common constraints and build a `MemoryCli`.
     fn finish(self, default_size: u64, file: Option<PathBuf>) -> anyhow::Result<MemoryCli> {
-        if self.transparent_hugepages == Some(true) && self.shared != Some(false) {
-            anyhow::bail!("thp=on requires shared=off");
-        }
         if self.hugepage_size.is_some() && self.hugepages != Some(true) {
             anyhow::bail!("hugepage_size requires hugepages=on");
         }
@@ -1560,7 +1554,9 @@ impl MemoryOptionAccum {
             mem_size: self.mem_size.unwrap_or(default_size),
             shared: self.shared,
             prefetch: self.prefetch.unwrap_or(false),
-            transparent_hugepages: self.transparent_hugepages.unwrap_or(false),
+            transparent_hugepages: self
+                .transparent_hugepages
+                .unwrap_or(self.hugepages != Some(true)),
             hugepages: self.hugepages.unwrap_or(false),
             hugepage_size: self.hugepage_size,
             file,
@@ -1574,7 +1570,7 @@ fn parse_memory_config(s: &str) -> anyhow::Result<MemoryCli> {
             mem_size: parse_memory(s)?,
             shared: None,
             prefetch: false,
-            transparent_hugepages: false,
+            transparent_hugepages: true,
             hugepages: false,
             hugepage_size: None,
             file: None,
@@ -5015,7 +5011,7 @@ mod tests {
                 mem_size: 64 * 1024 * 1024 * 1024,
                 shared: None,
                 prefetch: false,
-                transparent_hugepages: false,
+                transparent_hugepages: true,
                 hugepages: false,
                 hugepage_size: None,
                 file: None,
@@ -5057,7 +5053,7 @@ mod tests {
                 mem_size: DEFAULT_MEMORY_SIZE,
                 shared: None,
                 prefetch: false,
-                transparent_hugepages: false,
+                transparent_hugepages: true,
                 hugepages: false,
                 hugepage_size: None,
                 file: Some(PathBuf::from("/tmp/memory.bin")),
@@ -5067,7 +5063,6 @@ mod tests {
 
     #[test]
     fn test_memory_config_rejects_invalid_combinations() {
-        assert!(parse_memory_config("thp=on").is_err());
         assert!(parse_memory_config("size=1G,size=2G").is_err());
         assert!(parse_memory_config("hugepage_size=2M").is_err());
         assert!(parse_memory_config("hugepages=on,shared=off").is_err());

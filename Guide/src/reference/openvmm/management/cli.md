@@ -22,8 +22,9 @@ as well as the generated CLI help (via `cargo run -- --help`).
   * `shared=on|off` - use shared file-backed guest RAM. The default is
     `on`; `off` uses private anonymous memory.
   * `prefetch=on|off` - pre-populate shared guest RAM mappings.
-  * `thp=on|off` - mark private guest RAM as Transparent Huge Page
-    eligible. Requires `shared=off`.
+  * `thp=on|off` - mark guest RAM (shared or private) as Transparent Huge
+    Page eligible via `madvise(MADV_HUGEPAGE)`. Linux-only, best-effort, and
+    on by default; pass `thp=off` to opt out.
   * `hugepages=on|off` - allocate guest RAM from Linux hugetlb pages.
     This is Linux-only, requires shared memory, and cannot be combined
     with file-backed memory or PCAT/legacy x86 RAM splitting.
@@ -39,7 +40,7 @@ as well as the generated CLI help (via `cargo run -- --help`).
   --memory 4G
   --memory size=64GB,hugepages=on,hugepage_size=2MB
   --memory size=4G,file=path/to/memory.bin
-  --memory size=4G,shared=off,thp=on
+  --memory size=4G,thp=off
   ```
 * `--hv`: Exposes Hyper-V enlightenments. VMBus is enabled by default
   when `--hv` is active; pass `--no-vmbus` to suppress VMBus while keeping
