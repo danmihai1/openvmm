@@ -298,7 +298,7 @@ mod tests {
                 "decommitted page should be zeros"
             );
         }
-        
+
         // Second page should still have its data.
         let mut buf2 = vec![0u8; page_size];
         mapping.read_at(page_size, &mut buf2).unwrap();
