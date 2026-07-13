@@ -15,6 +15,7 @@ pub enum OpenvmmHclFeature {
     Gdb,
     MiSecure,
     Tpm,
+    NvidiaVpciRelayAllowed,
     LocalOnlyCustom(String),
 }
 
@@ -135,6 +136,7 @@ impl FlowNode for Node {
                     OpenvmmHclFeature::Gdb => "gdb".into(),
                     OpenvmmHclFeature::MiSecure => "mi-secure".into(),
                     OpenvmmHclFeature::Tpm => "tpm".into(),
+                    OpenvmmHclFeature::NvidiaVpciRelayAllowed => "nvidia_vpci_relay_allowed".into(),
                     OpenvmmHclFeature::LocalOnlyCustom(s) => s,
                 })
                 .collect::<Vec<String>>();
