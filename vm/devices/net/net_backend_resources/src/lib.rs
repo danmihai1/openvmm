@@ -158,7 +158,22 @@ pub mod tap {
         pub fd: std::os::fd::OwnedFd,
     }
 
+    /// A pre-opened TAP file descriptor together with the original interface
+    /// name used by the caller.
+    #[derive(MeshPayload)]
+    pub struct NamedTapHandle {
+        /// The TAP interface name used by the host caller.
+        pub name: String,
+        /// A pre-opened TAP file descriptor, configured with
+        /// `IFF_TAP | IFF_NO_PI | IFF_VNET_HDR`.
+        pub fd: std::os::fd::OwnedFd,
+    }
+
     impl ResourceId<NetEndpointHandleKind> for TapHandle {
         const ID: &'static str = "tap";
+    }
+
+    impl ResourceId<NetEndpointHandleKind> for NamedTapHandle {
+        const ID: &'static str = "tap_fd";
     }
 }

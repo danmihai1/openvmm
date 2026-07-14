@@ -112,10 +112,15 @@ pub use vnet_hdr::*;
 /// An endpoint based on a TAP interface.
 pub struct TapEndpoint {
     tap: Arc<Mutex<Option<tap::Tap>>>,
+    name: Option<String>,
 }
 
 impl TapEndpoint {
     pub fn new(tap: tap::Tap) -> Result<Self, tap::Error> {
+        Self::new_named(tap, None)
+    }
+
+    pub fn new_named(tap: tap::Tap, name: Option<String>) -> Result<Self, tap::Error> {
         // Do not enable any RX offloads (TUN_F_CSUM, TUN_F_TSO*, etc.).
         //
         // The TUN_F_* flags are the TAP equivalent of VIRTIO_NET_F_GUEST_*:
@@ -138,13 +143,14 @@ impl TapEndpoint {
 
         Ok(Self {
             tap: Arc::new(Mutex::new(Some(tap))),
+            name,
         })
     }
 }
 
 impl InspectMut for TapEndpoint {
     fn inspect_mut(&mut self, req: inspect::Request<'_>) {
-        req.respond();
+        req.respond().field("name", self.name.as_deref().unwrap_or("<unnamed>"));
     }
 }
 
