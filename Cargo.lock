@@ -4590,6 +4590,7 @@ dependencies = [
  "http",
  "mesh",
  "mesh_build",
+ "mesh_remote",
  "pal_async",
  "parking_lot",
  "prost",

@@ -9,7 +9,7 @@ use crate::message::ReadResult;
 use crate::message::Request;
 use crate::message::Response;
 use crate::message::TooLongError;
-use crate::message::read_message;
+use crate::message::read_message_with_resources;
 use crate::message::write_message;
 use crate::rpc::ProtocolError;
 use crate::rpc::status_from_err;
@@ -35,6 +35,8 @@ use pal_async::socket::PolledSocket;
 use std::collections::HashMap;
 use std::io::Read;
 use std::io::Write;
+use std::os::fd::AsFd;
+use std::os::fd::OwnedFd;
 use std::pin::Pin;
 use std::task::ready;
 use unicycle::FuturesUnordered;
@@ -118,12 +120,16 @@ impl Server {
 
     /// Runs the server using the ttrpc transport, listening on `listener` and
     /// servicing connections until `cancel`.
-    pub async fn run(
+    pub async fn run<L>(
         &mut self,
         driver: &(impl Driver + ?Sized),
-        listener: impl Listener,
+        listener: L,
         cancel: mesh::OneshotReceiver<()>,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<()>
+    where
+        L: Listener,
+        L::Socket: AsFd,
+    {
         let mut listener = PolledSocket::new(driver, listener)?;
         let mut tasks = FuturesUnordered::new();
         let mut cancel = cancel.fuse();
@@ -151,25 +157,25 @@ impl Server {
     pub async fn run_single(
         &mut self,
         driver: &(impl Driver + ?Sized),
-        conn: impl AsSockRef + Read + Write,
+        conn: impl AsSockRef + Read + Write + AsFd,
     ) -> anyhow::Result<()> {
         self.serve(PolledSocket::new(driver, conn)?).await
     }
 
     async fn serve(
         &self,
-        stream: PolledSocket<impl AsSockRef + Read + Write>,
+        stream: PolledSocket<impl AsSockRef + Read + Write + AsFd>,
     ) -> anyhow::Result<()> {
         let (mut reader, mut writer) = stream.split();
         let (stream_send, mut stream_recv) = mesh::channel();
         let ctx = CancelContext::new();
         let recv_task = async {
             let stream_send = stream_send; // move into this task
-            while let Some(message) = read_message(&mut reader).await? {
+            while let Some(message) = read_message_with_resources(&mut reader).await? {
                 let (send, recv) = mesh::oneshot::<Result<Vec<u8>, Status>>();
                 stream_send.send((message.stream_id, recv));
 
-                let handle = handle_message(message).and_then(|request| {
+                let handle = handle_message(message).and_then(|(request, resources)| {
                     let service = self.services.get(request.service.as_str()).ok_or_else(|| {
                         status_from_err(
                             Code::Unimplemented,
@@ -190,6 +196,7 @@ impl Server {
                                 method: request.method,
                                 data: request.payload,
                                 port,
+                                resources,
                             },
                         ));
                     })
@@ -250,7 +257,7 @@ impl Server {
     }
 }
 
-fn handle_message(message: ReadResult) -> Result<Request, Status> {
+fn handle_message(message: ReadResult) -> Result<(Request, Vec<OwnedFd>), Status> {
     if message.stream_id % 2 != 1 {
         return Err(status_from_err(
             Code::InvalidArgument,
@@ -274,7 +281,17 @@ fn handle_message(message: ReadResult) -> Result<Request, Status> {
                 "message",
             );
 
-            Ok(request)
+            Ok((
+                request,
+                message
+                    .resources
+                    .into_iter()
+                    .filter_map(|resource| match resource {
+                        mesh::resource::OsResource::Fd(fd) => Some(fd),
+                        _ => None,
+                    })
+                    .collect(),
+            ))
         }
         ty => Err(status_from_err(
             Code::InvalidArgument,
@@ -308,6 +325,7 @@ mod grpc {
     use prost::bytes::Bytes;
     use std::io::Read;
     use std::io::Write;
+    use std::os::fd::OwnedFd;
     use std::pin::Pin;
     use std::task::ready;
     use thiserror::Error;
@@ -508,7 +526,7 @@ mod grpc {
             // No returning HTTP status code errors after this point.
             let mut resp = resp.send_response(response.body(())?, false)?;
 
-            let result = self.invoke_rpc(service, method, body, ctx).await?;
+            let result = self.invoke_rpc(service, method, body, ctx, Vec::new()).await?;
 
             let mut trailers = HeaderMap::new();
             match result {
@@ -554,6 +572,7 @@ mod grpc {
             method: &str,
             mut body: RecvStream,
             ctx: CancelContext,
+            resources: Vec<OwnedFd>,
         ) -> Result<Result<Vec<u8>, Status>, RequestError> {
             let Some(service) = self.services.get(service) else {
                 return Ok(Err(Status {
@@ -598,6 +617,7 @@ mod grpc {
                 method: method.to_owned(),
                 data: buf,
                 port: send.into(),
+                resources,
             };
 
             service.send((ctx, rpc));

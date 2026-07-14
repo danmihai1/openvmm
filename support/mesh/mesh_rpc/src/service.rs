@@ -17,6 +17,7 @@ use mesh::payload::protobuf::MessageReader;
 use mesh::payload::protobuf::MessageSizer;
 use mesh::payload::protobuf::MessageWriter;
 use mesh::resource::Resource;
+use std::os::fd::OwnedFd;
 
 #[expect(clippy::allow_attributes)]
 mod grpc {
@@ -47,6 +48,8 @@ pub(crate) struct GenericRpc {
     pub data: Vec<u8>,
     #[mesh(3)]
     pub port: Port, // TODO: transparent mesh::OneshotSender<std::result::Result<Vec<u8>, Status>>,
+    #[mesh(4)]
+    pub resources: Vec<OwnedFd>,
 }
 
 impl GenericRpc {
@@ -69,6 +72,8 @@ struct GenericRpcView<'a> {
     data: &'a [u8],
     #[mesh(3)]
     port: Port,
+    #[mesh(4)]
+    resources: Vec<OwnedFd>,
 }
 
 /// Trait for service-specific RPC requests.
@@ -90,7 +95,8 @@ pub trait ServiceRpc: 'static + Send + Sized {
         method: &str,
         port: Port,
         data: &[u8],
-    ) -> std::result::Result<Self, (ServiceRpcError, Port)>;
+        resources: Vec<OwnedFd>,
+    ) -> std::result::Result<Self, (ServiceRpcError, Port, Vec<OwnedFd>)>;
 }
 
 /// An error returned while decoding a method call.
@@ -152,13 +158,14 @@ impl<'a, T: ServiceRpc> MessageDecode<'a, DecodedRpc<T>, Resource> for DecodedRp
         mesh::payload::inplace_none!(v: GenericRpcView<'_>);
         <GenericRpcView<'_> as DefaultEncoding>::Encoding::read_message(&mut v, reader)?;
         let v = v.take().expect("should be constructed");
-        let rpc = match T::decode(v.method, v.port, v.data) {
+        let rpc = match T::decode(v.method, v.port, v.data, v.resources) {
             Ok(rpc) => DecodedRpc::Rpc(rpc),
-            Err((err, port)) => {
+            Err((err, port, resources)) => {
                 let rpc = GenericRpc {
                     method: v.method.to_string(),
                     data: v.data.to_vec(),
                     port,
+                    resources,
                 };
                 DecodedRpc::Err { rpc, err }
             }

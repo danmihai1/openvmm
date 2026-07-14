@@ -11,6 +11,7 @@ grpc = ["dep:base64", "dep:h2", "dep:tokio", "dep:http", "dep:urlencoding"]
 
 [dependencies]
 mesh = { workspace = true, features = ["prost"] }
+mesh_remote.workspace = true
 pal_async.workspace = true
 unix_socket.workspace = true
 

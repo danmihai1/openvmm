@@ -9,7 +9,14 @@ use futures::AsyncRead;
 use futures::AsyncReadExt;
 use futures::AsyncWrite;
 use futures::AsyncWriteExt;
+use futures::future::poll_fn;
 use mesh::payload::Protobuf;
+use mesh::resource::OsResource;
+use mesh_remote::try_recv;
+use pal_async::socket::AsSockRef;
+use pal_async::socket::ReadHalf;
+use std::os::fd::AsFd;
+use std::io::Read;
 use std::io::ErrorKind;
 use thiserror::Error;
 use zerocopy::BigEndian;
@@ -60,6 +67,7 @@ pub struct ReadResult {
     pub stream_id: u32,
     pub message_type: u8,
     pub payload: Result<Vec<u8>, TooLongError>,
+    pub resources: Vec<OsResource>,
 }
 
 pub async fn read_message(
@@ -81,8 +89,13 @@ pub async fn read_message(
         reader.read_exact(&mut buf).await?;
         Ok(buf)
     } else {
-        // Discard the message that was too long.
-        futures::io::copy(reader.take(length as u64), &mut futures::io::sink()).await?;
+        let mut discard = vec![0u8; 4096];
+        let mut remaining = length;
+        while remaining > 0 {
+            let chunk = remaining.min(discard.len());
+            reader.read_exact(&mut discard[..chunk]).await?;
+            remaining -= chunk;
+        }
         Err(TooLongError(length))
     };
 
@@ -90,7 +103,63 @@ pub async fn read_message(
         stream_id,
         message_type: header.message_type,
         payload,
+        resources: Vec::new(),
     }))
+}
+
+pub async fn read_message_with_resources(
+    reader: &mut ReadHalf<impl AsSockRef + Read + AsFd>,
+) -> std::io::Result<Option<ReadResult>> {
+    let mut header = MessageHeader::new_zeroed();
+    let mut resources = Vec::new();
+    match read_exact_with_resources(reader, header.as_mut_bytes(), &mut resources).await {
+        Ok(_) => (),
+        Err(err) if err.kind() == ErrorKind::UnexpectedEof => {
+            return Ok(None);
+        }
+        Err(err) => return Err(err),
+    }
+
+    let stream_id = header.stream_id.get();
+    let length = header.length.get() as usize;
+    let payload = if length <= MAX_MESSAGE_SIZE {
+        let mut buf = vec![0; length];
+        read_exact_with_resources(reader, &mut buf, &mut resources).await?;
+        Ok(buf)
+    } else {
+        // Discard the message that was too long.
+        let mut discard = vec![0u8; 4096];
+        let mut remaining = length;
+        while remaining > 0 {
+            let chunk = remaining.min(discard.len());
+            read_exact_with_resources(reader, &mut discard[..chunk], &mut resources).await?;
+            remaining -= chunk;
+        }
+        Err(TooLongError(length))
+    };
+
+    Ok(Some(ReadResult {
+        stream_id,
+        message_type: header.message_type,
+        payload,
+        resources,
+    }))
+}
+
+async fn read_exact_with_resources(
+    reader: &mut ReadHalf<impl AsSockRef + Read + AsFd>,
+    buf: &mut [u8],
+    resources: &mut Vec<OsResource>,
+) -> std::io::Result<()> {
+    let mut read = 0;
+    while read < buf.len() {
+        let n = poll_fn(|cx| reader.poll_io(cx, |stream| try_recv(stream.get().as_fd(), &mut buf[read..], resources))).await?;
+        if n == 0 {
+            return Err(ErrorKind::UnexpectedEof.into());
+        }
+        read += n;
+    }
+    Ok(())
 }
 
 pub async fn write_message(

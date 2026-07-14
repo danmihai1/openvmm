@@ -35,7 +35,7 @@ const MAX_FDS_PER_MSG: usize = 64;
     clippy::useless_conversion,
     reason = "libc::cmsghdr has different type defs on gnu vs musl"
 )]
-pub(crate) fn try_send(
+pub fn try_send(
     fd: BorrowedFd<'_>,
     msg: &[IoSlice<'_>],
     fds: &[OsResource],
@@ -92,7 +92,7 @@ pub(crate) fn try_send(
 /// Receives the next packet. Returns the number of bytes read and any file
 /// descriptors that were associated with the packet. May fail with
 /// ErrorKind::WouldBlock.
-pub(crate) fn try_recv(
+pub fn try_recv(
     fd: BorrowedFd<'_>,
     buf: &mut [u8],
     fds: &mut Vec<OsResource>,

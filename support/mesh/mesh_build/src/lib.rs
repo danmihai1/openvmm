@@ -93,6 +93,7 @@ impl prost_build::ServiceGenerator for MeshServiceGenerator {
                 #(
                     #method_idents(
                         #request_types,
+                        ::std::vec::Vec<::std::os::fd::OwnedFd>,
                         ::mesh::OneshotSender<::core::result::Result<#response_types, ::mesh_rpc::service::Status>>,
                     ),
                 )*
@@ -103,7 +104,7 @@ impl prost_build::ServiceGenerator for MeshServiceGenerator {
                 pub fn fail(self, status: ::mesh_rpc::service::Status) {
                     match self {
                         #(
-                            #ident::#method_idents(_, response) => response.send(Err(status)),
+                            #ident::#method_idents(_, _, response) => response.send(Err(status)),
                         )*
                     }
                 }
@@ -115,7 +116,7 @@ impl prost_build::ServiceGenerator for MeshServiceGenerator {
                 fn method(&self) -> &'static str {
                     match self {
                         #(
-                            #ident::#method_idents(_, _) => #method_names,
+                            #ident::#method_idents(_, _, _) => #method_names,
                         )*
                     }
                 }
@@ -126,7 +127,7 @@ impl prost_build::ServiceGenerator for MeshServiceGenerator {
                 ) -> ::mesh::local_node::Port {
                     match self {
                         #(
-                            #ident::#method_idents(req, port) => {
+                            #ident::#method_idents(req, _, port) => {
                                 <<#request_types as ::mesh::payload::DefaultEncoding>::Encoding as ::mesh::payload::FieldEncode<_, _>>::write_field(req, writer);
                                 port.into()
                             }
@@ -137,7 +138,7 @@ impl prost_build::ServiceGenerator for MeshServiceGenerator {
                 fn compute_size(&mut self, sizer: ::mesh::payload::protobuf::FieldSizer<'_>) {
                     match self {
                         #(
-                            #ident::#method_idents(req, _) => {
+                            #ident::#method_idents(req, _, _) => {
                                 <<#request_types as ::mesh::payload::DefaultEncoding>::Encoding as ::mesh::payload::FieldEncode::<_, ::mesh::resource::Resource>>::compute_field_size(
                                     req,
                                     sizer);
@@ -150,17 +151,18 @@ impl prost_build::ServiceGenerator for MeshServiceGenerator {
                     method: &str,
                     port: ::mesh::local_node::Port,
                     data: &[u8],
-                ) -> Result<Self, (::mesh_rpc::service::ServiceRpcError, ::mesh::local_node::Port)> {
+                    resources: ::std::vec::Vec<::std::os::fd::OwnedFd>,
+                ) -> Result<Self, (::mesh_rpc::service::ServiceRpcError, ::mesh::local_node::Port, ::std::vec::Vec<::std::os::fd::OwnedFd>)> {
                     match method {
                         #(
                             #method_names => {
                                 match mesh::payload::decode(data) {
-                                    Ok(req) => Ok(#ident::#method_idents(req, port.into())),
-                                    Err(e) => Err((::mesh_rpc::service::ServiceRpcError::InvalidInput(e), port)),
+                                    Ok(req) => Ok(#ident::#method_idents(req, resources, port.into())),
+                                    Err(e) => Err((::mesh_rpc::service::ServiceRpcError::InvalidInput(e), port, resources)),
                                 }
                             }
                         )*
-                        _ => Err((::mesh_rpc::service::ServiceRpcError::UnknownMethod, port)),
+                        _ => Err((::mesh_rpc::service::ServiceRpcError::UnknownMethod, port, resources)),
                     }
                 }
             }

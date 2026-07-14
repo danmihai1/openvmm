@@ -386,13 +386,13 @@ impl VmService {
     async fn handle(&mut self, ctx: mesh::CancelContext, request: vmservice::Vm) -> HandleAction {
         tracing::debug!(?request, "request");
         match request {
-            vmservice::Vm::CreateVm(request, response) => {
+            vmservice::Vm::CreateVm(request, _resources, response) => {
                 response.send(map_grpc(self.create_vm(request).await))
             }
-            vmservice::Vm::TeardownVm((), response) => {
+            vmservice::Vm::TeardownVm((), _resources, response) => {
                 response.send(map_grpc(self.teardown_vm().await))
             }
-            vmservice::Vm::Quit((), response) => {
+            vmservice::Vm::Quit((), _resources, response) => {
                 // Shut down the controller (which stops and joins the worker).
                 if let Some(controller) = self.vm_controller.take() {
                     controller.send(VmControllerRpc::Quit);
@@ -417,15 +417,15 @@ impl VmService {
                     }
                 };
                 match request {
-                    vmservice::Vm::PauseVm((), response) => {
+                    vmservice::Vm::PauseVm((), _resources, response) => {
                         let r = Ok(self.pause_vm(&vm));
                         self.start_rpc(response, r);
                     }
-                    vmservice::Vm::ResumeVm((), response) => {
+                    vmservice::Vm::ResumeVm((), _resources, response) => {
                         let r = Ok(self.resume_vm(&vm));
                         self.start_rpc(response, r);
                     }
-                    vmservice::Vm::WaitVm((), response) => {
+                    vmservice::Vm::WaitVm((), _resources, response) => {
                         if self.wait_vm_response.is_some() {
                             response.send(Err(grpc_error(anyhow!("wait VM already in flight"))));
                         } else if self.halted {
@@ -436,18 +436,21 @@ impl VmService {
                             self.wait_vm_response = Some((ctx.clone(), response));
                         }
                     }
-                    vmservice::Vm::ModifyResource(request, response) => {
+                    vmservice::Vm::ModifyResource(request, _resources, response) => {
                         let r = self.modify_resource(&vm, request);
                         self.start_rpc(response, r);
                     }
-                    vmservice::Vm::AddPcieDevice(request, response) => {
+                    vmservice::Vm::AddPcieDevice(request, resources, response) => {
                         let worker_rpc = vm.worker_rpc.clone();
                         self.start_rpc(
                             response,
                             Ok(async move {
                                 let vmservice::AddPcieDeviceRequest { port_name, device } = request;
-                                let resource =
-                                    build_pcie_device(device.context("missing device")?).await?;
+                                let resource = build_pcie_device(
+                                    device.context("missing device")?,
+                                    resources,
+                                )
+                                .await?;
                                 worker_rpc
                                     .call_failable(VmRpc::AddPcieDevice, (port_name, resource))
                                     .await
@@ -455,7 +458,7 @@ impl VmService {
                             }),
                         );
                     }
-                    vmservice::Vm::RemovePcieDevice(request, response) => {
+                    vmservice::Vm::RemovePcieDevice(request, _resources, response) => {
                         let recv = vm
                             .worker_rpc
                             .call_failable(VmRpc::RemovePcieDevice, request.port_name);
@@ -465,14 +468,14 @@ impl VmService {
                         );
                     }
 
-                    r @ vmservice::Vm::CapabilitiesVm(_, _)
-                    | r @ vmservice::Vm::PropertiesVm(_, _) => {
+                    r @ vmservice::Vm::CapabilitiesVm(_, _, _)
+                    | r @ vmservice::Vm::PropertiesVm(_, _, _) => {
                         r.fail(grpc_error(anyhow!("not supported")))
                     }
 
-                    vmservice::Vm::CreateVm(_, _)
-                    | vmservice::Vm::TeardownVm(_, _)
-                    | vmservice::Vm::Quit(_, _) => unreachable!(),
+                    vmservice::Vm::CreateVm(_, _, _)
+                    | vmservice::Vm::TeardownVm(_, _, _)
+                    | vmservice::Vm::Quit(_, _, _) => unreachable!(),
                 };
             }
         }
@@ -481,10 +484,10 @@ impl VmService {
 
     async fn handle_inspect(&mut self, ctx: mesh::CancelContext, request: InspectService) {
         match request {
-            InspectService::Inspect(request, response) => {
+            InspectService::Inspect(request, _resources, response) => {
                 self.start_rpc(response, Ok(self.inspect(ctx, request)))
             }
-            InspectService::Update(request, response) => {
+            InspectService::Update(request, _resources, response) => {
                 self.start_rpc(response, Ok(self.update(ctx, request)))
             }
         }
@@ -1308,7 +1311,7 @@ async fn build_pcie_topology(
 
     let mut devices = Vec::new();
     for (port_name, device) in pending_devices {
-        let resource = build_pcie_device(device).await?;
+        let resource = build_pcie_device(device, Vec::new()).await?;
         devices.push(PcieDeviceConfig {
             port_name,
             resource,
@@ -1375,12 +1378,13 @@ fn walk_pcie_attachment(
 /// function, an NVMe controller, or a VFIO-assigned host device).
 async fn build_pcie_device(
     device: vmservice::PcieDeviceKind,
+    resources: Vec<std::os::fd::OwnedFd>,
 ) -> anyhow::Result<Resource<PciDeviceHandleKind>> {
     use vmservice::pcie_device_kind::Kind;
     let vmservice::PcieDeviceKind { kind } = device;
     Ok(match kind.context("missing PCIe device kind")? {
         Kind::Virtio(virtio) => {
-            let resource = build_virtio_device(virtio).await?;
+            let resource = build_virtio_device(virtio, resources).await?;
             VirtioPciDeviceHandle(resource).into_resource()
         }
         Kind::Nvme(nvme) => build_nvme_controller(nvme).await?,
@@ -1470,6 +1474,7 @@ async fn build_nvme_controller(
 /// `VirtioDevice`.
 async fn build_virtio_device(
     device: vmservice::VirtioDevice,
+    resources: Vec<std::os::fd::OwnedFd>,
 ) -> anyhow::Result<Resource<VirtioDeviceHandle>> {
     use vmservice::virtio_device::Kind;
     let vmservice::VirtioDevice { kind } = device;
@@ -1484,7 +1489,7 @@ async fn build_virtio_device(
             backend,
             mac_address,
         }) => {
-            let endpoint = build_nic_backend(backend.context("missing net backend")?)?;
+            let endpoint = build_nic_backend(backend.context("missing net backend")?, resources)?;
             virtio_resources::net::VirtioNetHandle {
                 max_queues: max_queues
                     .map(|q| q.try_into().context("max_queues out of range"))
@@ -1537,6 +1542,7 @@ async fn build_disk_backend(
 /// Builds a host network endpoint resource from the proto `NicBackend`.
 fn build_nic_backend(
     backend: vmservice::NicBackend,
+    mut resources: Vec<std::os::fd::OwnedFd>,
 ) -> anyhow::Result<Resource<NetEndpointHandleKind>> {
     use vmservice::nic_backend::Kind;
     let vmservice::NicBackend { kind } = backend;
@@ -1554,9 +1560,13 @@ fn build_nic_backend(
         }
         #[cfg(target_os = "linux")]
         Kind::Tap(vmservice::TapBackend { name }) => {
-            let fd = net_tap::tap::open_tap(name.as_ref())
-                .with_context(|| format!("failed to open TAP device '{name}'"))?;
-            net_backend_resources::tap::TapHandle { fd }.into_resource()
+            let fd = if resources.is_empty() {
+                net_tap::tap::open_tap(name.as_ref())
+                    .with_context(|| format!("failed to open TAP device '{name}'"))?
+            } else {
+                resources.remove(0)
+            };
+            net_backend_resources::tap::NamedTapHandle { name, fd }.into_resource()
         }
         #[cfg(windows)]
         Kind::Dio(vmservice::DioBackend { switch_id, port_id }) => {

@@ -41,6 +41,7 @@ use std::collections::VecDeque;
 use std::future::Future;
 use std::future::pending;
 use std::pin::pin;
+use std::os::fd::OwnedFd;
 use std::task::ready;
 use std::time::Duration;
 use unix_socket::UnixStream;
@@ -222,7 +223,7 @@ impl CallBuilder<'_> {
     #[must_use]
     pub fn start<F, R, T, U>(&self, rpc: F, input: T) -> Call<U>
     where
-        F: FnOnce(T, mesh::OneshotSender<Result<U, Status>>) -> R,
+        F: FnOnce(T, Vec<OwnedFd>, mesh::OneshotSender<Result<U, Status>>) -> R,
         R: ServiceRpc,
         U: 'static + MeshPayload + Send,
     {
@@ -233,7 +234,7 @@ impl CallBuilder<'_> {
             .send(mesh::OwnedMessage::new(ClientRequest {
                 service: R::NAME.to_string(),
                 deadline: self.deadline.map(Into::into),
-                rpc: DecodedRpc::Rpc(rpc(input, send)),
+                rpc: DecodedRpc::Rpc(rpc(input, Vec::new(), send)),
                 wait_ready: self.wait_ready,
             }));
 
@@ -254,6 +255,7 @@ impl CallBuilder<'_> {
                     method: method.to_string(),
                     data,
                     port: send.into(),
+                    resources: vec![],
                 },
                 wait_ready: self.wait_ready,
             }));
@@ -410,7 +412,7 @@ impl<T: Dial> ClientWorker<T> {
     }
 
     async fn run_connection(&mut self, stream: T::Stream) -> anyhow::Result<()> {
-        let (mut reader, mut writer) = AsyncReadExt::split(stream);
+        let (mut reader, mut writer) = stream.split();
         let responses = Mutex::new(HashMap::<u32, mesh::OneshotSender<mesh::OwnedMessage>>::new());
         let recv_task = async {
             while let Some(message) = read_message(&mut reader)

@@ -29,6 +29,9 @@ mod unix_common;
 mod unix_listener;
 mod unix_node;
 
+#[cfg(unix)]
+pub use unix_common::try_recv;
+
 #[cfg(windows)]
 pub mod windows {
     //! Windows-specific mesh functionality.
