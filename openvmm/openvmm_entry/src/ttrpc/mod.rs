@@ -449,6 +449,7 @@ impl VmService {
                                 let resource = build_pcie_device(
                                     device.context("missing device")?,
                                     resources,
+                                    true,
                                 )
                                 .await?;
                                 worker_rpc
@@ -1311,7 +1312,7 @@ async fn build_pcie_topology(
 
     let mut devices = Vec::new();
     for (port_name, device) in pending_devices {
-        let resource = build_pcie_device(device, Vec::new()).await?;
+        let resource = build_pcie_device(device, Vec::new(), false).await?;
         devices.push(PcieDeviceConfig {
             port_name,
             resource,
@@ -1379,12 +1380,13 @@ fn walk_pcie_attachment(
 async fn build_pcie_device(
     device: vmservice::PcieDeviceKind,
     resources: Vec<std::os::fd::OwnedFd>,
+    require_tap_fd: bool,
 ) -> anyhow::Result<Resource<PciDeviceHandleKind>> {
     use vmservice::pcie_device_kind::Kind;
     let vmservice::PcieDeviceKind { kind } = device;
     Ok(match kind.context("missing PCIe device kind")? {
         Kind::Virtio(virtio) => {
-            let resource = build_virtio_device(virtio, resources).await?;
+            let resource = build_virtio_device(virtio, resources, require_tap_fd).await?;
             VirtioPciDeviceHandle(resource).into_resource()
         }
         Kind::Nvme(nvme) => build_nvme_controller(nvme).await?,
@@ -1475,6 +1477,7 @@ async fn build_nvme_controller(
 async fn build_virtio_device(
     device: vmservice::VirtioDevice,
     resources: Vec<std::os::fd::OwnedFd>,
+    require_tap_fd: bool,
 ) -> anyhow::Result<Resource<VirtioDeviceHandle>> {
     use vmservice::virtio_device::Kind;
     let vmservice::VirtioDevice { kind } = device;
@@ -1489,7 +1492,8 @@ async fn build_virtio_device(
             backend,
             mac_address,
         }) => {
-            let endpoint = build_nic_backend(backend.context("missing net backend")?, resources)?;
+            let endpoint =
+                build_nic_backend(backend.context("missing net backend")?, resources, require_tap_fd)?;
             virtio_resources::net::VirtioNetHandle {
                 max_queues: max_queues
                     .map(|q| q.try_into().context("max_queues out of range"))
@@ -1543,6 +1547,7 @@ async fn build_disk_backend(
 fn build_nic_backend(
     backend: vmservice::NicBackend,
     mut resources: Vec<std::os::fd::OwnedFd>,
+    require_tap_fd: bool,
 ) -> anyhow::Result<Resource<NetEndpointHandleKind>> {
     use vmservice::nic_backend::Kind;
     let vmservice::NicBackend { kind } = backend;
@@ -1560,11 +1565,23 @@ fn build_nic_backend(
         }
         #[cfg(target_os = "linux")]
         Kind::Tap(vmservice::TapBackend { name }) => {
-            let fd = if resources.is_empty() {
+            let fd = if require_tap_fd {
+                match resources.len() {
+                    1 => resources.remove(0),
+                    n => anyhow::bail!(
+                        "tap hotplug requires exactly one TAP fd resource, received {n}"
+                    ),
+                }
+            } else if resources.is_empty() {
                 net_tap::tap::open_tap(name.as_ref())
                     .with_context(|| format!("failed to open TAP device '{name}'"))?
-            } else {
+            } else if resources.len() == 1 {
                 resources.remove(0)
+            } else {
+                anyhow::bail!(
+                    "tap backend expected at most one TAP fd resource, received {}",
+                    resources.len()
+                )
             };
             net_backend_resources::tap::NamedTapHandle { name, fd }.into_resource()
         }

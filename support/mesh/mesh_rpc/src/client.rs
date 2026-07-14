@@ -227,6 +227,24 @@ impl CallBuilder<'_> {
         R: ServiceRpc,
         U: 'static + MeshPayload + Send,
     {
+        self.start_with_resources(rpc, input, Vec::new())
+    }
+
+    /// Starts the RPC with explicit OS resources attached.
+    ///
+    /// This is used for SCM_RIGHTS-style fd passing over Unix transports.
+    #[must_use]
+    pub fn start_with_resources<F, R, T, U>(
+        &self,
+        rpc: F,
+        input: T,
+        resources: Vec<OwnedFd>,
+    ) -> Call<U>
+    where
+        F: FnOnce(T, Vec<OwnedFd>, mesh::OneshotSender<Result<U, Status>>) -> R,
+        R: ServiceRpc,
+        U: 'static + MeshPayload + Send,
+    {
         let (send, recv) = mesh::oneshot();
 
         self.client
@@ -234,7 +252,7 @@ impl CallBuilder<'_> {
             .send(mesh::OwnedMessage::new(ClientRequest {
                 service: R::NAME.to_string(),
                 deadline: self.deadline.map(Into::into),
-                rpc: DecodedRpc::Rpc(rpc(input, Vec::new(), send)),
+                rpc: DecodedRpc::Rpc(rpc(input, resources, send)),
                 wait_ready: self.wait_ready,
             }));
 
