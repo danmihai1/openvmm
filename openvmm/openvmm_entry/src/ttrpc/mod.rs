@@ -1899,6 +1899,9 @@ async fn build_virtio_device(
                 build_disk_backend(backend.context("missing blk backend")?, read_only).await?;
             virtio_resources::blk::VirtioBlkHandle { disk, read_only }.into_resource()
         }
+        Kind::Pmem(vmservice::VirtioPmem { path }) => {
+            virtio_resources::pmem::VirtioPmemHandle { path }.into_resource()
+        }
         Kind::Net(vmservice::VirtioNet {
             max_queues,
             backend,
