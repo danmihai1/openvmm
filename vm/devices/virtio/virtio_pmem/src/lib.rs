@@ -28,6 +28,8 @@ use virtio::spec::VirtioDeviceFeatures;
 use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
 
+const VIRTIO_PMEM_F_SHMEM_REGION: u32 = 1 << 0;
+
 #[derive(InspectMut)]
 pub struct Device {
     driver: VmTaskDriver,
@@ -65,21 +67,28 @@ struct PmemConfig {
     size: u64,
 }
 
+fn device_traits(len: u64) -> DeviceTraits {
+    DeviceTraits {
+        device_id: virtio::spec::VirtioDeviceType::PMEM,
+        device_features: VirtioDeviceFeatures::new()
+            .with_device_specific_low(VIRTIO_PMEM_F_SHMEM_REGION)
+            .with_ring_event_idx(true)
+            .with_ring_indirect_desc(true)
+            .with_ring_packed(true),
+        max_queues: 1,
+        device_register_length: size_of::<PmemConfig>() as u32,
+        shared_memory: DeviceTraitsSharedMemory {
+            id: 0,
+            // The PCI transport rounds the BAR size up independently. The
+            // capability must report the actual persistent-memory range.
+            size: len,
+        },
+    }
+}
+
 impl VirtioDevice for Device {
     fn traits(&self) -> DeviceTraits {
-        DeviceTraits {
-            device_id: virtio::spec::VirtioDeviceType::PMEM,
-            device_features: VirtioDeviceFeatures::new()
-                .with_ring_event_idx(true)
-                .with_ring_indirect_desc(true)
-                .with_ring_packed(true),
-            max_queues: 1,
-            device_register_length: size_of::<PmemConfig>() as u32,
-            shared_memory: DeviceTraitsSharedMemory {
-                id: 0,
-                size: self.len.next_power_of_two().max(0x200000),
-            },
-        }
+        device_traits(self.len)
     }
 
     async fn read_registers_u32(&mut self, _offset: u16) -> u32 {
@@ -222,4 +231,23 @@ fn process_pmem_request(
     };
     let _ = work.write(mem, &u32::to_le_bytes(err));
     4
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn advertises_exact_shared_memory_region() {
+        const NON_POWER_OF_TWO_LEN: u64 = 200 * 1024 * 1024;
+
+        let traits = device_traits(NON_POWER_OF_TWO_LEN);
+
+        assert_ne!(
+            traits.device_features.bank(0) & VIRTIO_PMEM_F_SHMEM_REGION,
+            0
+        );
+        assert_eq!(traits.shared_memory.id, 0);
+        assert_eq!(traits.shared_memory.size, NON_POWER_OF_TWO_LEN);
+    }
 }
