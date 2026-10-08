@@ -566,6 +566,16 @@ impl VmService {
     async fn handle(&mut self, ctx: mesh::CancelContext, request: vmservice::Vm) -> HandleAction {
         tracing::debug!(?request, "request");
         match request {
+            vmservice::Vm::ProtocolInfo((), response) => {
+                let protocol_info = self.build_protocol_info();
+                tracing::info!(
+                    api_version = protocol_info.api_version,
+                    schema_revision = %protocol_info.schema_revision,
+                    build_revision = %protocol_info.build_revision,
+                    "VM service protocol info"
+                );
+                response.send(Ok(protocol_info));
+            }
             vmservice::Vm::CreateVm(request, response) => {
                 response.send(map_grpc(self.create_vm(request).await))
             }
@@ -1150,6 +1160,14 @@ impl VmService {
             processor_stats: None,
             state: vmservice::VmState::from(&self.lifecycle) as i32,
             halt_reason,
+        }
+    }
+
+    fn build_protocol_info(&self) -> vmservice::ProtocolInfoResponse {
+        vmservice::ProtocolInfoResponse {
+            api_version: vmservice::API_VERSION,
+            schema_revision: format!("fnv1a64:{:016x}", vmservice::SCHEMA_FINGERPRINT),
+            build_revision: vmservice::BUILD_REVISION.to_owned(),
         }
     }
 
