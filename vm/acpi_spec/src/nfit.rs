@@ -23,6 +23,12 @@ pub const SPA_RANGE_PERSISTENT_MEMORY_GUID: [u8; 16] = [
 /// The NVDIMM cannot accept persistent writes.
 pub const MEMORY_DEVICE_STATE_NOT_ARMED: u16 = 1 << 3;
 
+/// The control region is strictly for management during hot-add and online.
+pub const SPA_RANGE_CONTROL_REGION_FOR_MANAGEMENT: u16 = 1 << 0;
+
+/// The proximity domain field is valid.
+pub const SPA_RANGE_PROXIMITY_DOMAIN_VALID: u16 = 1 << 1;
+
 /// UEFI write-back memory attribute.
 pub const EFI_MEMORY_WB: u64 = 0x8;
 
@@ -111,10 +117,7 @@ pub struct ControlRegion {
     pub subsystem_vendor_id: u16_ne,
     pub subsystem_device_id: u16_ne,
     pub subsystem_revision_id: u16_ne,
-    pub valid_fields: u8,
-    pub manufacturing_location: u8,
-    pub manufacturing_date: u16_ne,
-    pub reserved: [u8; 2],
+    pub reserved: [u8; 6],
     pub serial_number: u32_ne,
     pub region_format_interface_code: u16_ne,
     pub block_control_window_count: u16_ne,

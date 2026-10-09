@@ -1414,7 +1414,9 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
                 nfit::SpaRange {
                     header: nfit::StructureHeader::new::<nfit::SpaRange>(0),
                     spa_range_index: index.into(),
-                    flags: 0.into(),
+                    flags: (nfit::SPA_RANGE_CONTROL_REGION_FOR_MANAGEMENT
+                        | nfit::SPA_RANGE_PROXIMITY_DOMAIN_VALID)
+                        .into(),
                     reserved: 0.into(),
                     proximity_domain: 0.into(),
                     address_range_type_guid: nfit::SPA_RANGE_PERSISTENT_MEMORY_GUID,
@@ -1446,16 +1448,13 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
                 nfit::ControlRegion {
                     header: nfit::StructureHeader::new::<nfit::ControlRegion>(4),
                     control_region_index: index.into(),
-                    vendor_id: 0x1414.into(),
+                    vendor_id: 0x8086.into(),
                     device_id: 1.into(),
                     revision_id: 1.into(),
-                    subsystem_vendor_id: 0x1414.into(),
-                    subsystem_device_id: 1.into(),
-                    subsystem_revision_id: 1.into(),
-                    valid_fields: 0,
-                    manufacturing_location: 0,
-                    manufacturing_date: 0.into(),
-                    reserved: [0; 2],
+                    subsystem_vendor_id: 0.into(),
+                    subsystem_device_id: 0.into(),
+                    subsystem_revision_id: 0.into(),
+                    reserved: [0; 6],
                     serial_number: u32::from(nvdimm.physical_id).into(),
                     region_format_interface_code: 0x301.into(),
                     block_control_window_count: 0.into(),
@@ -1659,6 +1658,11 @@ mod test {
         assert_eq!(
             u16::from_le_bytes(nfit[spa..spa + 2].try_into().unwrap()),
             0
+        );
+        assert_eq!(
+            u16::from_le_bytes(nfit[spa + 6..spa + 8].try_into().unwrap()),
+            acpi_spec::nfit::SPA_RANGE_CONTROL_REGION_FOR_MANAGEMENT
+                | acpi_spec::nfit::SPA_RANGE_PROXIMITY_DOMAIN_VALID
         );
         assert_eq!(
             &nfit[spa + 16..spa + 32],
