@@ -2671,6 +2671,20 @@ pub trait MappedMemoryRegion: Send + Sync {
         writable: bool,
     ) -> io::Result<()>;
 
+    /// Privately maps an object at `offset` with writable copy-on-write pages.
+    fn map_cow(
+        &self,
+        _offset: usize,
+        _section: &dyn AsMappableRef,
+        _file_offset: u64,
+        _len: usize,
+    ) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "copy-on-write mappings are not supported",
+        ))
+    }
+
     /// Unmaps any mappings in the specified range within the region.
     fn unmap(&self, offset: usize, len: usize) -> io::Result<()>;
 }

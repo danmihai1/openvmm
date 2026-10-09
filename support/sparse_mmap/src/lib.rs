@@ -301,6 +301,28 @@ mod tests {
     }
 
     #[test]
+    fn test_file_copy_mapping() {
+        let page_size = SparseMapping::page_size();
+        let backing = alloc_shared_memory(page_size, "test-file-copy").unwrap();
+        let backing_view = SparseMapping::new(page_size).unwrap();
+        backing_view
+            .map_file(0, page_size, &backing, 0, true)
+            .unwrap();
+        backing_view.write_at(0, b"original").unwrap();
+
+        let copy_view = SparseMapping::new(page_size).unwrap();
+        copy_view.map_file_copy(0, page_size, &backing, 0).unwrap();
+
+        let mut value = [0; 8];
+        copy_view.read_at(0, &mut value).unwrap();
+        assert_eq!(&value, b"original");
+
+        copy_view.write_at(0, b"modified").unwrap();
+        backing_view.read_at(0, &mut value).unwrap();
+        assert_eq!(&value, b"original");
+    }
+
+    #[test]
     fn test_decommit_zeros_pages() {
         let page_size = SparseMapping::page_size();
         let mapping = SparseMapping::new(4 * page_size).unwrap();

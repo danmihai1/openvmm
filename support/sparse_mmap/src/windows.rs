@@ -691,6 +691,24 @@ impl SparseMapping {
         )
     }
 
+    /// Maps a portion of a file privately at `offset`.
+    pub fn map_file_copy(
+        &self,
+        offset: usize,
+        len: usize,
+        file_mapping: impl AsHandle,
+        file_offset: u64,
+    ) -> Result<(), Error> {
+        self.map_view_of_file(
+            offset,
+            len,
+            file_mapping.as_handle(),
+            file_offset,
+            PAGE_WRITECOPY,
+            None,
+        )
+    }
+
     /// Maps a portion of a file mapping at `offset`, optionally bound to a
     /// specific host NUMA node.
     pub fn map_file_numa(

@@ -327,6 +327,13 @@ pub enum MappingBacking {
         /// The file offset into `mappable`.
         file_offset: u64,
     },
+    /// Backed by a private copy-on-write view of a mappable OS object.
+    FileCopy {
+        /// The OS object to map.
+        mappable: Mappable,
+        /// The file offset into `mappable`.
+        file_offset: u64,
+    },
     /// Backed by private anonymous memory committed directly by the mapping
     /// manager. There is no backing fd, so the memory cannot be shared with
     /// other processes or programmed into DMA targets that require an fd; it is
@@ -352,7 +359,9 @@ impl MappingBacking {
     /// Returns the backing object, if this mapping is file-backed.
     pub fn mappable(&self) -> Option<&Mappable> {
         match self {
-            MappingBacking::File { mappable, .. } => Some(mappable),
+            MappingBacking::File { mappable, .. } | MappingBacking::FileCopy { mappable, .. } => {
+                Some(mappable)
+            }
             MappingBacking::Private => None,
         }
     }
@@ -360,7 +369,8 @@ impl MappingBacking {
     /// Returns the offset within the backing object, or 0 if there is none.
     pub fn file_offset(&self) -> u64 {
         match self {
-            MappingBacking::File { file_offset, .. } => *file_offset,
+            MappingBacking::File { file_offset, .. }
+            | MappingBacking::FileCopy { file_offset, .. } => *file_offset,
             MappingBacking::Private => 0,
         }
     }

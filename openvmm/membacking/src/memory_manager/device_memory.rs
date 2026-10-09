@@ -73,6 +73,7 @@ struct DeviceMapping {
     file_offset: u64,
     mappable: Mappable,
     writable: bool,
+    copy_on_write: bool,
 }
 
 impl DeviceMemoryRegion {
@@ -81,16 +82,15 @@ impl DeviceMemoryRegion {
             .try_into()
             .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))
     }
-}
 
-impl MappedMemoryRegion for DeviceMemoryRegion {
-    fn map(
+    fn add_mapping(
         &self,
         offset: usize,
         section: &dyn sparse_mmap::AsMappableRef,
         file_offset: u64,
         len: usize,
         writable: bool,
+        copy_on_write: bool,
     ) -> io::Result<()> {
         #[cfg(unix)]
         let mappable = section.as_fd().try_clone_to_owned()?;
@@ -103,6 +103,7 @@ impl MappedMemoryRegion for DeviceMemoryRegion {
             file_offset,
             mappable: mappable.into(),
             writable,
+            copy_on_write,
         };
 
         let mut state = self.state.lock();
@@ -113,12 +114,20 @@ impl MappedMemoryRegion for DeviceMemoryRegion {
         }
 
         if let Some(handle) = &state.handle {
-            if let Err(e) = block_on(handle.add_mapping(
-                new_mapping.range,
+            let backing = if new_mapping.copy_on_write {
+                MappingBacking::FileCopy {
+                    mappable: new_mapping.mappable.clone(),
+                    file_offset: new_mapping.file_offset,
+                }
+            } else {
                 MappingBacking::File {
                     mappable: new_mapping.mappable.clone(),
                     file_offset: new_mapping.file_offset,
-                },
+                }
+            };
+            if let Err(e) = block_on(handle.add_mapping(
+                new_mapping.range,
+                backing,
                 new_mapping.writable,
                 MemoryPolicy::none(),
             )) {
@@ -127,6 +136,29 @@ impl MappedMemoryRegion for DeviceMemoryRegion {
         }
         state.mappings.push(new_mapping);
         Ok(())
+    }
+}
+
+impl MappedMemoryRegion for DeviceMemoryRegion {
+    fn map(
+        &self,
+        offset: usize,
+        section: &dyn sparse_mmap::AsMappableRef,
+        file_offset: u64,
+        len: usize,
+        writable: bool,
+    ) -> io::Result<()> {
+        self.add_mapping(offset, section, file_offset, len, writable, false)
+    }
+
+    fn map_cow(
+        &self,
+        offset: usize,
+        section: &dyn sparse_mmap::AsMappableRef,
+        file_offset: u64,
+        len: usize,
+    ) -> io::Result<()> {
+        self.add_mapping(offset, section, file_offset, len, true, true)
     }
 
     fn unmap(&self, offset: usize, len: usize) -> io::Result<()> {
@@ -171,13 +203,21 @@ impl MappableGuestMemory for DeviceMemoryControl {
                 .map_err(io::Error::other)?;
 
             for mapping in &state.mappings {
+                let backing = if mapping.copy_on_write {
+                    MappingBacking::FileCopy {
+                        mappable: mapping.mappable.clone(),
+                        file_offset: mapping.file_offset,
+                    }
+                } else {
+                    MappingBacking::File {
+                        mappable: mapping.mappable.clone(),
+                        file_offset: mapping.file_offset,
+                    }
+                };
                 handle
                     .add_mapping(
                         mapping.range,
-                        MappingBacking::File {
-                            mappable: mapping.mappable.clone(),
-                            file_offset: mapping.file_offset,
-                        },
+                        backing,
                         mapping.writable,
                         MemoryPolicy::none(),
                     )

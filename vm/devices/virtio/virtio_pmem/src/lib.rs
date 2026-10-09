@@ -36,7 +36,6 @@ pub struct Device {
     #[inspect(skip)]
     mappable: sparse_mmap::Mappable,
     len: u64,
-    writable: bool,
     #[inspect(mut)]
     worker: TaskControl<PmemWorker, PmemQueue>,
 }
@@ -56,7 +55,6 @@ impl Device {
             worker: TaskControl::new(PmemWorker { writable, file }),
             mappable,
             len,
-            writable,
         })
     }
 }
@@ -82,7 +80,7 @@ fn device_traits(len: u64) -> DeviceTraits {
             // The PCI transport rounds the BAR size up independently. The
             // capability must report the actual persistent-memory range.
             size: len,
-            writable: false,
+            writable: true,
         },
     }
 }
@@ -105,7 +103,7 @@ impl VirtioDevice for Device {
         region: &std::sync::Arc<dyn guestmem::MappedMemoryRegion>,
     ) -> anyhow::Result<()> {
         region
-            .map(0, &self.mappable, 0, self.len as usize, self.writable)
+            .map_cow(0, &self.mappable, 0, self.len as usize)
             .context("failed to map shared memory region")?;
 
         Ok(())
@@ -250,6 +248,6 @@ mod tests {
         );
         assert_eq!(traits.shared_memory.id, 0);
         assert_eq!(traits.shared_memory.size, NON_POWER_OF_TWO_LEN);
-        assert!(!traits.shared_memory.writable);
+        assert!(traits.shared_memory.writable);
     }
 }

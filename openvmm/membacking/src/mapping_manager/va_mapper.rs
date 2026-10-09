@@ -366,6 +366,13 @@ impl MapperTask {
                 self.map_file(&params, mappable, *file_offset, deferred_protect)?;
                 false
             }
+            MappingBacking::FileCopy {
+                mappable,
+                file_offset,
+            } => {
+                self.map_file_copy(&params, mappable, *file_offset)?;
+                true
+            }
             MappingBacking::Private => {
                 self.map_private(&params, deferred_protect)?;
                 true
@@ -380,6 +387,24 @@ impl MapperTask {
             },
         );
         Ok(())
+    }
+
+    fn map_file_copy(
+        &self,
+        params: &MappingParams,
+        mappable: &super::mappable::Mappable,
+        file_offset: u64,
+    ) -> Result<(), MappingError> {
+        let range = params.range;
+        self.inner
+            .mapping
+            .map_file_copy(
+                range.start() as usize,
+                range.len() as usize,
+                mappable,
+                file_offset,
+            )
+            .map_err(|error| MappingError::new(range, error))
     }
 
     /// Maps a file-backed region into the VA space, applying NUMA policy where

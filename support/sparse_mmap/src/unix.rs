@@ -264,6 +264,28 @@ impl SparseMapping {
         }
     }
 
+    /// Maps a portion of a file privately at `offset`.
+    pub fn map_file_copy(
+        &self,
+        offset: usize,
+        len: usize,
+        file_mapping: impl AsFd,
+        file_offset: u64,
+    ) -> Result<(), Error> {
+        // SAFETY: The flags passed in are valid. MAP_PRIVATE provides a writable
+        // copy-on-write view without requiring write access to the file.
+        unsafe {
+            self.mmap(
+                offset,
+                len,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE,
+                file_mapping.as_fd(),
+                file_offset as i64,
+            )
+        }
+    }
+
     /// Calls `mbind(MPOL_BIND)` on a range within this mapping, binding
     /// pages to a specific host NUMA node.
     ///
