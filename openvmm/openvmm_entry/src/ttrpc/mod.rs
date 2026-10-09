@@ -62,6 +62,7 @@ use openvmm_defs::config::MemoryConfig;
 use openvmm_defs::config::NumaDistance;
 use openvmm_defs::config::NumaNode;
 use openvmm_defs::config::NumaTopology;
+use openvmm_defs::config::NvdimmConfig;
 use openvmm_defs::config::PcieDeviceConfig;
 use openvmm_defs::config::PcieGenericInitiatorConfig;
 use openvmm_defs::config::PcieMmioRangeConfig;
@@ -902,6 +903,7 @@ impl VmService {
             pcie_devices: pcie.devices,
             pcie_switches: pcie.switches,
             pcie_generic_initiators: pcie.generic_initiators,
+            nvdimms: pcie.nvdimms,
             vpci_devices: vec![],
             numa,
             chipset: chipset.chipset,
@@ -1283,7 +1285,13 @@ impl VmService {
         let registry = self.registry.clone();
         Ok(async move {
             let vmservice::AddPcieDeviceRequest { port_name, device } = request;
-            let resource = build_pcie_device(device.context("missing device")?, &registry).await?;
+            let resource =
+                match build_pcie_device(device.context("missing device")?, &registry).await? {
+                    BuiltPcieDevice::Pci(resource) => resource,
+                    BuiltPcieDevice::Nvdimm(_) => {
+                        anyhow::bail!("NVDIMMs cannot be added after VM creation")
+                    }
+                };
             worker_rpc
                 .call_failable(VmRpc::AddPcieDevice, (port_name, resource))
                 .await
@@ -1619,6 +1627,7 @@ struct BuiltPcieTopology {
     switches: Vec<PcieSwitchConfig>,
     devices: Vec<PcieDeviceConfig>,
     generic_initiators: Vec<PcieGenericInitiatorConfig>,
+    nvdimms: Vec<NvdimmConfig>,
 }
 
 async fn build_pcie_topology(
@@ -1692,12 +1701,20 @@ async fn build_pcie_topology(
     }
 
     let mut devices = Vec::new();
+    let mut nvdimms = Vec::new();
     for (port_name, device) in pending_devices {
-        let resource = build_pcie_device(device, registry).await?;
-        devices.push(PcieDeviceConfig {
-            port_name,
-            resource,
-        });
+        match build_pcie_device(device, registry).await? {
+            BuiltPcieDevice::Pci(resource) => {
+                devices.push(PcieDeviceConfig {
+                    port_name,
+                    resource,
+                });
+            }
+            BuiltPcieDevice::Nvdimm(nvdimm) => {
+                anyhow::ensure!(nvdimms.len() < 256, "at most 256 NVDIMMs are supported");
+                nvdimms.push(nvdimm);
+            }
+        }
     }
 
     let generic_initiators = generic_initiators
@@ -1713,6 +1730,7 @@ async fn build_pcie_topology(
         switches,
         devices,
         generic_initiators,
+        nvdimms,
     })
 }
 
@@ -1775,19 +1793,47 @@ fn walk_pcie_attachment(
 
 /// Builds the resource for a single endpoint PCIe device function (a virtio
 /// function, an NVMe controller, or a VFIO-assigned host device).
+enum BuiltPcieDevice {
+    Pci(Resource<PciDeviceHandleKind>),
+    Nvdimm(NvdimmConfig),
+}
+
 async fn build_pcie_device(
     device: vmservice::PcieDeviceKind,
     registry: &FdRegistry,
-) -> anyhow::Result<Resource<PciDeviceHandleKind>> {
+) -> anyhow::Result<BuiltPcieDevice> {
     use vmservice::pcie_device_kind::Kind;
     let vmservice::PcieDeviceKind { kind } = device;
     Ok(match kind.context("missing PCIe device kind")? {
         Kind::Virtio(virtio) => {
-            let resource = build_virtio_device(virtio, registry).await?;
-            VirtioPciDeviceHandle(resource).into_resource()
+            let vmservice::VirtioDevice { kind } = virtio;
+            match kind {
+                Some(vmservice::virtio_device::Kind::Pmem(vmservice::VirtioPmem { path })) => {
+                    let file = File::open(&path)
+                        .with_context(|| format!("failed to open NVDIMM backing file {path}"))?;
+                    let metadata = file
+                        .metadata()
+                        .with_context(|| format!("failed to inspect NVDIMM backing file {path}"))?;
+                    anyhow::ensure!(metadata.is_file(), "NVDIMM backing must be a regular file");
+                    anyhow::ensure!(metadata.len() != 0, "NVDIMM backing must not be empty");
+                    anyhow::ensure!(
+                        metadata.len().is_multiple_of(4096),
+                        "NVDIMM backing size must be 4 KiB aligned"
+                    );
+                    BuiltPcieDevice::Nvdimm(NvdimmConfig {
+                        file,
+                        len: metadata.len(),
+                    })
+                }
+                kind => {
+                    let resource =
+                        build_virtio_device(vmservice::VirtioDevice { kind }, registry).await?;
+                    BuiltPcieDevice::Pci(VirtioPciDeviceHandle(resource).into_resource())
+                }
+            }
         }
-        Kind::Nvme(nvme) => build_nvme_controller(nvme).await?,
-        Kind::Vfio(vfio) => build_vfio_device(vfio)?,
+        Kind::Nvme(nvme) => BuiltPcieDevice::Pci(build_nvme_controller(nvme).await?),
+        Kind::Vfio(vfio) => BuiltPcieDevice::Pci(build_vfio_device(vfio)?),
     })
 }
 

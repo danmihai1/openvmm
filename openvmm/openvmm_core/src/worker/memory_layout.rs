@@ -74,6 +74,8 @@ pub(super) struct ResolvedMemoryLayout {
     pub virtio_mmio_region: MemoryRange,
     /// Resolved chipset MMIO ranges.
     pub chipset_mmio: ChipsetMmioRanges,
+    /// Guest physical ranges occupied by ACPI NVDIMMs.
+    pub nvdimm_ranges: Vec<MemoryRange>,
     /// Resolved VTL2 framebuffer GPA base. `None` when VTL2 graphics is not
     /// configured.
     pub vtl2_framebuffer_gpa_base: Option<u64>,
@@ -139,6 +141,8 @@ pub(super) struct MemoryLayoutInput<'a> {
     /// `PostMmio` allocation is created and the resolved GPA is returned in
     /// `ResolvedMemoryLayout::vtl2_framebuffer_gpa_base`.
     pub vtl2_framebuffer_size: u64,
+    /// Sizes of ACPI NVDIMM ranges, in device order.
+    pub nvdimm_sizes: &'a [u64],
     /// Host-supported physical address width used only after allocation. The
     /// allocator computes the smallest layout it can; host fit is validation.
     pub physical_address_size: u8,
@@ -375,6 +379,22 @@ pub(super) fn resolve_memory_layout(
         builder.ram(format!("ram{vnode}"), ram_ranges, ram_size, ram_alignment);
     }
 
+    let mut nvdimm_ranges = vec![MemoryRange::EMPTY; input.nvdimm_sizes.len()];
+    for (index, (&size, range)) in input
+        .nvdimm_sizes
+        .iter()
+        .zip(&mut nvdimm_ranges)
+        .enumerate()
+    {
+        builder.request(
+            format!("nvdimm{index}"),
+            range,
+            size,
+            PAGE_SIZE,
+            Placement::PostMmio,
+        );
+    }
+
     // VTL2 chipset MMIO is implementation-private — placed after all
     // VTL0-visible RAM/MMIO so enabling VTL2 does not move VTL0 addresses.
     let mut vtl2_chipset_mmio = MemoryRange::EMPTY;
@@ -539,6 +559,7 @@ pub(super) fn resolve_memory_layout(
             high: chipset_high_mmio,
             vtl2: vtl2_chipset_mmio,
         },
+        nvdimm_ranges,
         vtl2_framebuffer_gpa_base: if vtl2_framebuffer_range.is_empty() {
             None
         } else {
@@ -638,6 +659,7 @@ mod tests {
             vtl2_layout,
             ram_start_address: 0,
             vtl2_framebuffer_size: 0,
+            nvdimm_sizes: &[],
             physical_address_size: 46,
         }
     }
@@ -680,6 +702,25 @@ mod tests {
         assert_eq!(actual.ram_size(), 2 * GB);
         // RAM starts at GPA 0 and fills upward.
         assert_eq!(actual.ram()[0].range.start(), 0);
+    }
+
+    #[test]
+    fn nvdimm_is_allocated_outside_ram_and_mmio() {
+        let mut input = input(&[2 * GB], None);
+        input.nvdimm_sizes = &[200 * MB];
+
+        let resolved = resolve_memory_layout(input).unwrap();
+        let nvdimm = resolved.nvdimm_ranges[0];
+
+        assert_eq!(nvdimm.len(), 200 * MB);
+        assert!(nvdimm.start().is_multiple_of(PAGE_SIZE));
+        assert!(
+            resolved
+                .memory_layout
+                .ram()
+                .iter()
+                .all(|ram| !ram.range.overlaps(&nvdimm))
+        );
     }
 
     #[test]

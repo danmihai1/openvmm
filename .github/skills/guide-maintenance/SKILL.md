@@ -129,6 +129,15 @@ grep '()\s*$' Guide/src/SUMMARY.md
 
 ---
 
+## Code-to-Guide Mapping Table
+
+| Code path | Guide page |
+|-----------|------------|
+| `vm/acpi_spec/src/nfit.rs` | `reference/emulated/nvdimm.md` |
+| `vmm_core/src/acpi_builder.rs` | `reference/emulated/nvdimm.md` |
+| `openvmm/openvmm_core/src/worker/` | `reference/emulated/nvdimm.md` |
+| `openvmm/openvmm_entry/src/ttrpc/` | `reference/emulated/nvdimm.md`, `reference/openvmm/management/grpc.md` |
+
 ## Mapping Table Format
 
 Each row in the mapping table follows:

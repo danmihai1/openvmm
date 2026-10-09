@@ -6,6 +6,7 @@
 // TODO: continue to remove these hardcoded deps
 use acpi::cedt::Cedt;
 use acpi::dsdt;
+use acpi::dsdt::AmlObject;
 use acpi::ssdt::Ssdt;
 use acpi_spec::madt::InterruptPolarity;
 use acpi_spec::madt::InterruptTriggerMode;
@@ -13,6 +14,7 @@ use cache_topology::CacheTopology;
 use chipset::ioapic;
 use chipset::psp;
 use inspect::Inspect;
+use memory_range::MemoryRange;
 use std::collections::BTreeMap;
 use thiserror::Error;
 use vm_topology::memory::MemoryLayout;
@@ -81,6 +83,17 @@ pub struct GenericInitiator {
     pub vnode: u32,
 }
 
+/// ACPI description of one emulated NVDIMM.
+#[derive(Debug, Clone, Copy)]
+pub struct NvdimmAcpiConfig {
+    /// Guest physical address range containing the persistent-memory image.
+    pub range: MemoryRange,
+    /// NFIT device handle, also used as the AML `_ADR`.
+    pub device_handle: u32,
+    /// Stable per-VM DIMM identifier.
+    pub physical_id: u16,
+}
+
 /// Builder to construct a set of [`BuiltAcpiTables`]
 pub struct AcpiTablesBuilder<'a, T: AcpiTopology> {
     /// The processor topology.
@@ -105,6 +118,8 @@ pub struct AcpiTablesBuilder<'a, T: AcpiTopology> {
     /// PCI generic initiators to expose in the SRAT, associating passthrough
     /// devices with (typically CPU-less) NUMA nodes.
     pub generic_initiators: &'a [GenericInitiator],
+    /// Emulated NVDIMMs exposed through NFIT.
+    pub nvdimms: &'a [NvdimmAcpiConfig],
     /// Architecture-specific ACPI configuration.
     pub arch: AcpiArchConfig,
 }
@@ -1114,6 +1129,7 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
         ));
         // Add any chipset devices.
         add_devices_to_dsdt(&mut dsdt_data);
+        self.add_nvdimm_devices(&mut dsdt_data);
         // Add processor devices:
         // Device(P###) { Name(_HID, "ACPI0007") Name(_UID, #) Method(_STA, 0) { Return(0xF) } }
         for proc_index in 1..self.processor_topology.vp_count() + 1 {
@@ -1133,6 +1149,38 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
         }
 
         self.build_acpi_tables_inner(gpa, &dsdt_data.to_bytes())
+    }
+
+    fn add_nvdimm_devices(&self, dsdt: &mut dsdt::Dsdt) {
+        if self.nvdimms.is_empty() {
+            return;
+        }
+
+        fn add_unsupported_dsm(device: &mut dsdt::Device) {
+            let mut method = dsdt::Method::new(b"_DSM");
+            method.set_arg_count(4);
+            method.add_operation(&dsdt::ReturnOp {
+                result: dsdt::Buffer(&[0u8]).to_bytes(),
+            });
+            device.add_object(&method);
+        }
+
+        let mut root = dsdt::Device::new(b"NVDR");
+        root.add_object(&dsdt::NamedString::new(b"_HID", b"ACPI0012"));
+        add_unsupported_dsm(&mut root);
+
+        for nvdimm in self.nvdimms {
+            let name = format!("NV{:02X}", nvdimm.physical_id);
+            let mut device = dsdt::Device::new(name.as_bytes());
+            device.add_object(&dsdt::NamedInteger::new(
+                b"_ADR",
+                u64::from(nvdimm.device_handle),
+            ));
+            add_unsupported_dsm(&mut device);
+            root.add_object(&device);
+        }
+
+        dsdt.add_object(&root);
     }
 
     fn build_acpi_tables_inner(&self, gpa: u64, dsdt: &[u8]) -> BuiltAcpiTables {
@@ -1275,6 +1323,9 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
 
         self.with_madt(|t| b.append(t));
         self.with_srat(|t| b.append(t));
+        if !self.nvdimms.is_empty() {
+            self.with_nfit(|t| b.append(t));
+        }
         if let Some(info) = self.slit_info {
             self.with_slit(info, |t| b.append(t));
         }
@@ -1345,6 +1396,87 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
     /// ACPI tables.
     pub fn build_mcfg(&self) -> Vec<u8> {
         self.with_mcfg(|t| t.to_vec(&OEM_INFO))
+    }
+
+    /// Helper method to construct an NFIT without constructing the rest of the
+    /// ACPI tables. Returns `None` when no NVDIMMs are configured.
+    pub fn build_nfit(&self) -> Option<Vec<u8>> {
+        (!self.nvdimms.is_empty()).then(|| self.with_nfit(|t| t.to_vec(&OEM_INFO)))
+    }
+
+    fn with_nfit<R>(&self, f: impl FnOnce(&acpi::builder::Table<'_>) -> R) -> R {
+        use acpi_spec::nfit;
+
+        let mut structures = Vec::new();
+        for nvdimm in self.nvdimms {
+            let index = nvdimm.physical_id + 1;
+            structures.extend_from_slice(
+                nfit::SpaRange {
+                    header: nfit::StructureHeader::new::<nfit::SpaRange>(0),
+                    spa_range_index: index.into(),
+                    flags: 0.into(),
+                    reserved: 0.into(),
+                    proximity_domain: 0.into(),
+                    address_range_type_guid: nfit::SPA_RANGE_PERSISTENT_MEMORY_GUID,
+                    spa_base: nvdimm.range.start().into(),
+                    spa_length: nvdimm.range.len().into(),
+                    memory_mapping_attributes: (nfit::EFI_MEMORY_WB | nfit::EFI_MEMORY_NV).into(),
+                }
+                .as_bytes(),
+            );
+            structures.extend_from_slice(
+                nfit::MemoryDeviceMapping {
+                    header: nfit::StructureHeader::new::<nfit::MemoryDeviceMapping>(1),
+                    device_handle: nvdimm.device_handle.into(),
+                    physical_id: nvdimm.physical_id.into(),
+                    region_id: nvdimm.physical_id.into(),
+                    spa_range_index: index.into(),
+                    control_region_index: index.into(),
+                    region_size: nvdimm.range.len().into(),
+                    region_offset: 0.into(),
+                    address_region_base: 0.into(),
+                    interleave_index: 0.into(),
+                    interleave_ways: 1.into(),
+                    state_flags: nfit::MEMORY_DEVICE_STATE_NOT_ARMED.into(),
+                    reserved: 0.into(),
+                }
+                .as_bytes(),
+            );
+            structures.extend_from_slice(
+                nfit::ControlRegion {
+                    header: nfit::StructureHeader::new::<nfit::ControlRegion>(4),
+                    control_region_index: index.into(),
+                    vendor_id: 0x1414.into(),
+                    device_id: 1.into(),
+                    revision_id: 1.into(),
+                    subsystem_vendor_id: 0x1414.into(),
+                    subsystem_device_id: 1.into(),
+                    subsystem_revision_id: 1.into(),
+                    valid_fields: 0,
+                    manufacturing_location: 0,
+                    manufacturing_date: 0.into(),
+                    reserved: [0; 2],
+                    serial_number: u32::from(nvdimm.physical_id).into(),
+                    region_format_interface_code: 0x301.into(),
+                    block_control_window_count: 0.into(),
+                    block_control_window_size: 0.into(),
+                    command_register_offset: 0.into(),
+                    command_register_size: 0.into(),
+                    status_register_offset: 0.into(),
+                    status_register_size: 0.into(),
+                    flags: 0.into(),
+                    reserved2: [0; 6],
+                }
+                .as_bytes(),
+            );
+        }
+
+        (f)(&acpi::builder::Table::new_dyn(
+            1,
+            None,
+            &nfit::Nfit::default(),
+            &[&structures],
+        ))
     }
 
     /// Helper method to construct an IORT without constructing the rest of the
@@ -1450,6 +1582,7 @@ mod test {
             pcie_host_bridges,
             slit_info: None,
             generic_initiators: &[],
+            nvdimms: &[],
             arch: AcpiArchConfig::X86 {
                 with_ioapic: true,
                 with_pic: false,
@@ -1502,6 +1635,57 @@ mod test {
             entries,
             apic_ids.iter().map(|e| Some(*e)).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn test_read_only_nvdimm_tables() {
+        let mem = new_mem();
+        let topology = TopologyBuilder::new_x86().build(1).unwrap();
+        let pcie = vec![];
+        let nvdimms = [NvdimmAcpiConfig {
+            range: MemoryRange::new(0x1_2000_0000..0x1_2c80_0000),
+            device_handle: 1,
+            physical_id: 0,
+        }];
+        let mut builder = new_builder(&mem, &topology, &pcie);
+        builder.nvdimms = &nvdimms;
+
+        let nfit = builder.build_nfit().unwrap();
+        assert_eq!(&nfit[0..4], b"NFIT");
+        assert_eq!(nfit.len(), 36 + 4 + 56 + 48 + 80);
+        assert_eq!(nfit.iter().copied().fold(0u8, u8::wrapping_add), 0);
+
+        let spa = 40;
+        assert_eq!(
+            u16::from_le_bytes(nfit[spa..spa + 2].try_into().unwrap()),
+            0
+        );
+        assert_eq!(
+            &nfit[spa + 16..spa + 32],
+            &acpi_spec::nfit::SPA_RANGE_PERSISTENT_MEMORY_GUID
+        );
+        assert_eq!(
+            u64::from_le_bytes(nfit[spa + 32..spa + 40].try_into().unwrap()),
+            nvdimms[0].range.start()
+        );
+        assert_eq!(
+            u64::from_le_bytes(nfit[spa + 40..spa + 48].try_into().unwrap()),
+            nvdimms[0].range.len()
+        );
+
+        let mapping = spa + 56;
+        assert_eq!(
+            u16::from_le_bytes(nfit[mapping..mapping + 2].try_into().unwrap()),
+            1
+        );
+        assert_eq!(
+            u16::from_le_bytes(nfit[mapping + 44..mapping + 46].try_into().unwrap()),
+            acpi_spec::nfit::MEMORY_DEVICE_STATE_NOT_ARMED
+        );
+
+        let tables = builder.build_acpi_tables(0x100000, |_| {}).tables;
+        assert!(tables.windows(8).any(|window| window == b"ACPI0012"));
+        assert!(tables.windows(4).any(|window| window == b"NV00"));
     }
 
     #[test]
@@ -1595,6 +1779,7 @@ mod test {
             pcie_host_bridges,
             slit_info: None,
             generic_initiators: &[],
+            nvdimms: &[],
             arch: AcpiArchConfig::Aarch64 {
                 hypervisor_vendor_identity: 0,
                 virt_timer_ppi: 20,
@@ -1764,6 +1949,7 @@ mod test {
             pcie_host_bridges,
             slit_info: None,
             generic_initiators: &[],
+            nvdimms: &[],
             arch: AcpiArchConfig::Aarch64 {
                 hypervisor_vendor_identity: 0,
                 virt_timer_ppi: 20,

@@ -42,6 +42,8 @@ use futures::executor::block_on;
 use futures::future::try_join_all;
 use futures_concurrency::prelude::*;
 use guestmem::GuestMemory;
+use guestmem::MappedMemoryRegion;
+use guestmem::MemoryMapper;
 use hvdef::HV_PAGE_SIZE;
 use hvdef::Vtl;
 use hypervisor_resources::HypervisorKind;
@@ -70,6 +72,7 @@ use openvmm_defs::config::GicConfig;
 use openvmm_defs::config::HypervisorConfig;
 use openvmm_defs::config::LoadMode;
 use openvmm_defs::config::NumaTopology;
+use openvmm_defs::config::NvdimmConfig;
 use openvmm_defs::config::PcieDeviceConfig;
 use openvmm_defs::config::PcieIommuConfig;
 use openvmm_defs::config::PcieRootComplexConfig;
@@ -145,6 +148,7 @@ use vmgs_resources::GuestStateEncryptionPolicy;
 use vmgs_resources::VmgsResource;
 use vmm_core::acpi_builder::AcpiTablesBuilder;
 use vmm_core::acpi_builder::GenericInitiator;
+use vmm_core::acpi_builder::NvdimmAcpiConfig;
 use vmm_core::acpi_builder::SlitInfo;
 use vmm_core::device_builder::VpciBusConfig;
 use vmm_core::input_distributor::InputDistributor;
@@ -192,6 +196,7 @@ impl Manifest {
             pcie_devices: config.pcie_devices,
             pcie_switches: config.pcie_switches,
             pcie_generic_initiators: config.pcie_generic_initiators,
+            nvdimms: config.nvdimms,
             vpci_devices: config.vpci_devices,
             hypervisor: config.hypervisor,
             numa: config.numa,
@@ -235,6 +240,7 @@ pub struct Manifest {
     pcie_devices: Vec<PcieDeviceConfig>,
     pcie_switches: Vec<PcieSwitchConfig>,
     pcie_generic_initiators: Vec<openvmm_defs::config::PcieGenericInitiatorConfig>,
+    nvdimms: Vec<NvdimmConfig>,
     vpci_devices: Vec<VpciDeviceConfig>,
     numa: NumaTopology,
     processor_topology: ProcessorTopologyConfig,
@@ -448,6 +454,7 @@ pub(crate) struct InitializedVm {
     resolved_pcie_root_complex_ranges: Vec<ResolvedPcieRootComplexRanges>,
     virtio_mmio_region: MemoryRange,
     chipset_mmio: ChipsetMmioRanges,
+    nvdimm_ranges: Vec<MemoryRange>,
     vtl2_framebuffer_gpa_base: Option<u64>,
     resolved_iommu: ResolvedIommu,
     processor_topology: ProcessorTopology,
@@ -790,6 +797,9 @@ struct LoadedVmInner {
     /// Each holds the port's live bus-range handle, read at ACPI-build time
     /// (after PCI resource assignment) to derive the device bus.
     generic_initiator_sources: Vec<GenericInitiatorSource>,
+    nvdimms: Vec<NvdimmConfig>,
+    nvdimm_acpi: Vec<NvdimmAcpiConfig>,
+    _nvdimm_regions: Vec<Arc<dyn MappedMemoryRegion>>,
     pcie_hotplug_devices: Vec<(
         String,
         vmotherboard::DynamicDeviceUnit,
@@ -1124,6 +1134,11 @@ impl InitializedVm {
         } else {
             0
         };
+        let nvdimm_sizes = cfg
+            .nvdimms
+            .iter()
+            .map(|nvdimm| nvdimm.len)
+            .collect::<Vec<_>>();
         let resolved_layout = resolve_memory_layout(MemoryLayoutInput {
             node_mem_sizes: &node_mem_sizes,
             layout: cfg.layout.clone(),
@@ -1132,6 +1147,7 @@ impl InitializedVm {
             vtl2_layout,
             ram_start_address,
             vtl2_framebuffer_size,
+            nvdimm_sizes: &nvdimm_sizes,
             physical_address_size,
         })
         .context("invalid memory configuration")?;
@@ -1139,6 +1155,7 @@ impl InitializedVm {
         let resolved_pcie_root_complex_ranges = resolved_layout.pcie_root_complex_ranges;
         let virtio_mmio_region = resolved_layout.virtio_mmio_region;
         let chipset_mmio = resolved_layout.chipset_mmio;
+        let nvdimm_ranges = resolved_layout.nvdimm_ranges;
 
         // Combine the IOMMU RC configs with the MMIO ranges from the layout
         // engine into the resolved per-instance resources. A VM has at most one
@@ -1267,7 +1284,8 @@ impl InitializedVm {
 
         let max_addr = mem_layout
             .end_of_layout()
-            .max(mem_layout.vtl2_range().map_or(0, |r| r.end()));
+            .max(mem_layout.vtl2_range().map_or(0, |r| r.end()))
+            .max(nvdimm_ranges.last().map_or(0, MemoryRange::end));
 
         let mut memory_manager = memory_builder
             .build(max_addr)
@@ -1335,6 +1353,7 @@ impl InitializedVm {
             resolved_pcie_root_complex_ranges,
             virtio_mmio_region,
             chipset_mmio,
+            nvdimm_ranges,
             vtl2_framebuffer_gpa_base: resolved_layout.vtl2_framebuffer_gpa_base,
             resolved_iommu,
             processor_topology,
@@ -1366,6 +1385,7 @@ impl InitializedVm {
             resolved_pcie_root_complex_ranges,
             virtio_mmio_region,
             chipset_mmio,
+            nvdimm_ranges,
             vtl2_framebuffer_gpa_base,
             resolved_iommu,
             processor_topology,
@@ -1469,6 +1489,30 @@ impl InitializedVm {
         ));
 
         let mapper = memory_manager.device_memory_mapper();
+        let mut nvdimm_acpi = Vec::with_capacity(cfg.nvdimms.len());
+        let mut nvdimm_regions = Vec::with_capacity(cfg.nvdimms.len());
+        for (index, (nvdimm, range)) in cfg.nvdimms.iter().zip(&nvdimm_ranges).enumerate() {
+            let len = usize::try_from(nvdimm.len).context("NVDIMM size does not fit usize")?;
+            let mappable = sparse_mmap::new_mappable_from_file(&nvdimm.file, false, true)
+                .context("failed to create NVDIMM file mapping")?;
+            let (mut control, region) = mapper
+                .new_region(len, format!("nvdimm{index}"))
+                .context("failed to create NVDIMM memory region")?;
+            region
+                .map_cow(0, &mappable, 0, len)
+                .context("failed to map NVDIMM backing file")?;
+            control
+                .map_to_guest(range.start(), true)
+                .context("failed to map NVDIMM into guest address space")?;
+            nvdimm_acpi.push(NvdimmAcpiConfig {
+                range: *range,
+                device_handle: u32::try_from(index + 1)
+                    .context("too many NVDIMMs for ACPI device handles")?,
+                physical_id: u16::try_from(index)
+                    .context("too many NVDIMMs for ACPI physical IDs")?,
+            });
+            nvdimm_regions.push(region);
+        }
 
         #[cfg_attr(not(guest_arch = "x86_64"), expect(unused_mut))]
         let mut deps_hyperv_firmware_pcat = None;
@@ -1526,6 +1570,7 @@ impl InitializedVm {
                             // PCAT BIOS is mutually exclusive with PCIe root
                             // ports (the only source of generic initiators).
                             generic_initiators: &[],
+                            nvdimms: &[],
                             arch: vmm_core::acpi_builder::AcpiArchConfig::X86 {
                                 with_ioapic: cfg.chipset_capabilities.with_ioapic,
                                 with_pic: cfg.chipset_capabilities.with_pic,
@@ -2975,6 +3020,9 @@ impl InitializedVm {
                 pcie_host_bridges,
                 pcie_root_complexes,
                 generic_initiator_sources,
+                nvdimms: cfg.nvdimms,
+                nvdimm_acpi,
+                _nvdimm_regions: nvdimm_regions,
                 pcie_hotplug_devices: Vec::new(),
             },
         };
@@ -3048,6 +3096,7 @@ impl LoadedVmInner {
             pcie_host_bridges: &self.pcie_host_bridges,
             slit_info: slit_info.as_ref(),
             generic_initiators: &generic_initiators,
+            nvdimms: &self.nvdimm_acpi,
             #[cfg(guest_arch = "x86_64")]
             arch: vmm_core::acpi_builder::AcpiArchConfig::X86 {
                 with_ioapic: self.chipset_capabilities.with_ioapic,
@@ -3900,7 +3949,8 @@ impl LoadedVm {
             pcie_devices: vec![],            // TODO
             pcie_switches: vec![],           // TODO
             pcie_generic_initiators: vec![], // TODO
-            vpci_devices: vec![],            // TODO
+            nvdimms: self.inner.nvdimms,
+            vpci_devices: vec![], // TODO
             numa: self.inner.numa_cfg,
             processor_topology: self.inner.processor_topology.to_config(),
             chipset: self.inner.chipset_cfg,

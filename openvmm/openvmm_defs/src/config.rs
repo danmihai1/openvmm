@@ -30,6 +30,7 @@ pub struct Config {
     pub pcie_devices: Vec<PcieDeviceConfig>,
     pub pcie_switches: Vec<PcieSwitchConfig>,
     pub pcie_generic_initiators: Vec<PcieGenericInitiatorConfig>,
+    pub nvdimms: Vec<NvdimmConfig>,
     pub vpci_devices: Vec<VpciDeviceConfig>,
     pub numa: NumaTopology,
     pub processor_topology: ProcessorTopologyConfig,
@@ -60,6 +61,12 @@ pub struct Config {
     pub layout: vmm_core_defs::LayoutConfig,
     // This is used for testing. TODO: resourcify, and also store this in VMGS.
     pub rtc_delta_milliseconds: i64,
+}
+
+#[derive(Debug, MeshPayload)]
+pub struct NvdimmConfig {
+    pub file: File,
+    pub len: u64,
 }
 
 pub const DEFAULT_GIC_DISTRIBUTOR_BASE: u64 = 0xFFFF_0000;

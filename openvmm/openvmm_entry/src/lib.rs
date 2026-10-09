@@ -1910,6 +1910,7 @@ async fn vm_config_from_command_line(
         pcie_devices,
         pcie_switches,
         pcie_generic_initiators,
+        nvdimms: Vec::new(),
         vpci_devices,
         ide_disks: Vec::new(),
         numa: {

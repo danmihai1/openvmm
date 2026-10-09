@@ -18,6 +18,7 @@ pub mod iort;
 pub mod ivrs;
 pub mod madt;
 pub mod mcfg;
+pub mod nfit;
 pub mod pptt;
 pub mod slit;
 pub mod srat;

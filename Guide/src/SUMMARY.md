@@ -109,6 +109,7 @@
       - [framebuffer]()
       - [input]()
   - [Emulated]()
+    - [NVDIMM](./reference/emulated/nvdimm.md)
     - [vTPM]()
     - [NVMe]()
       - [Overview](./reference/emulated/NVMe/overview.md)

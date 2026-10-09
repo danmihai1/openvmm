@@ -40,4 +40,11 @@ In other words: This API is _very_ WIP, and user discretion is advised.
 * ModifyResource
 * Quit
 
+## Persistent memory compatibility
+
+An initial PCIe topology may contain a `VirtioPmem` request for compatibility
+with existing clients. The RPC server translates that request into a static,
+read-only [emulated NVDIMM](../../emulated/nvdimm.md), rather than creating a
+virtio-pmem PCI endpoint.
+
 [`vmservice.proto`]: https://github.com/microsoft/openvmm/blob/main/openvmm/openvmm_ttrpc_vmservice/src/vmservice.proto
