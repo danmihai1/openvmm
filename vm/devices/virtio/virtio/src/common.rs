@@ -459,10 +459,21 @@ impl VirtioDoorbells {
     }
 }
 
-#[derive(Copy, Clone, Debug, Default)]
+#[derive(Copy, Clone, Debug)]
 pub struct DeviceTraitsSharedMemory {
     pub id: u8,
     pub size: u64,
+    pub writable: bool,
+}
+
+impl Default for DeviceTraitsSharedMemory {
+    fn default() -> Self {
+        Self {
+            id: 0,
+            size: 0,
+            writable: true,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]

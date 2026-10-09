@@ -159,6 +159,7 @@ impl VirtioDevice for VirtioFsDevice {
             shared_memory: DeviceTraitsSharedMemory {
                 id: 0,
                 size: self.shmem_size,
+                writable: true,
             },
         }
     }

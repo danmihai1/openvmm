@@ -988,7 +988,11 @@ pub enum BarMemoryKind {
     /// BAR memory is routed to the device's `MmioIntercept` handler
     Intercept(#[inspect(rename = "handle")] Box<dyn ControlMmioIntercept>),
     /// BAR memory is routed to a shared memory region
-    SharedMem(#[inspect(skip)] Box<dyn MappableGuestMemory>),
+    SharedMem {
+        #[inspect(skip)]
+        control: Box<dyn MappableGuestMemory>,
+        writable: bool,
+    },
     /// **TESTING ONLY** BAR memory isn't backed by anything!
     Dummy,
 }
@@ -999,7 +1003,7 @@ impl std::fmt::Debug for BarMemoryKind {
             Self::Intercept(control) => {
                 write!(f, "Intercept(region_name: {}, ..)", control.region_name())
             }
-            Self::SharedMem(_) => write!(f, "Mmap(..)"),
+            Self::SharedMem { .. } => write!(f, "Mmap(..)"),
             Self::Dummy => write!(f, "Dummy"),
         }
     }
@@ -1012,7 +1016,7 @@ impl BarMemoryKind {
                 control.map(gpa);
                 Ok(())
             }
-            BarMemoryKind::SharedMem(control) => control.map_to_guest(gpa, true),
+            BarMemoryKind::SharedMem { control, writable } => control.map_to_guest(gpa, *writable),
             BarMemoryKind::Dummy => Ok(()),
         }
     }
@@ -1028,7 +1032,7 @@ impl BarMemoryKind {
                     control.unmap();
                 }
             }
-            BarMemoryKind::SharedMem(control) => control.unmap_from_guest(),
+            BarMemoryKind::SharedMem { control, .. } => control.unmap_from_guest(),
             BarMemoryKind::Dummy => {}
         }
     }

@@ -82,6 +82,7 @@ fn device_traits(len: u64) -> DeviceTraits {
             // The PCI transport rounds the BAR size up independently. The
             // capability must report the actual persistent-memory range.
             size: len,
+            writable: false,
         },
     }
 }
@@ -249,5 +250,6 @@ mod tests {
         );
         assert_eq!(traits.shared_memory.id, 0);
         assert_eq!(traits.shared_memory.size, NON_POWER_OF_TWO_LEN);
+        assert!(!traits.shared_memory.writable);
     }
 }

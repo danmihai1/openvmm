@@ -291,7 +291,11 @@ impl VirtioDevice for Device {
                 .with_in_order(true),
             max_queues: 2 * self.registers.max_virtqueue_pairs,
             device_register_length: size_of::<NetConfig>() as u32,
-            shared_memory: DeviceTraitsSharedMemory { id: 0, size: 0 },
+            shared_memory: DeviceTraitsSharedMemory {
+                id: 0,
+                size: 0,
+                writable: true,
+            },
         }
     }
 

@@ -321,7 +321,13 @@ impl VirtioPciDevice {
                 ),
             )));
 
-            bars = bars.bar4(shared_memory_size, BarMemoryKind::SharedMem(control));
+            bars = bars.bar4(
+                shared_memory_size,
+                BarMemoryKind::SharedMem {
+                    control,
+                    writable: traits.shared_memory.writable,
+                },
+            );
 
             device
                 .set_shared_memory_region(&region)
