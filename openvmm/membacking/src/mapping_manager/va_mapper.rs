@@ -57,6 +57,7 @@ use super::manager::MappingParams;
 use super::manager::MappingRequest;
 use super::manager::MemoryPolicy;
 use crate::RemoteProcess;
+use crate::region_manager::MappingType;
 use futures::executor::block_on;
 use guestmem::GuestMemoryAccess;
 use guestmem::GuestMemoryBackingError;
@@ -127,15 +128,19 @@ pub(crate) enum MapperRole {
 /// static snapshot of the RAM layout.
 #[derive(Debug)]
 struct MappingProps {
-    /// Backed by private anonymous memory (committed up front) rather than a
-    /// shared file/section mapping.
-    private: bool,
+    /// RAM that cannot be shared with another process.
+    unshareable_ram: bool,
     /// General per-mapping fault counters, always present. See [`FaultStats`].
     stats: FaultStats,
     /// Soft-large-page (Windows THP) state, or `None` when the scheme does not
     /// apply (non-primary/device mappers, read-only or non-THP ranges, and every
     /// non-Windows host). See the [`soft_lp`] module.
     soft_lp: Option<SoftLp>,
+}
+
+fn is_unshareable_ram(params: &MappingParams) -> bool {
+    params.mapping_type == MappingType::Ram
+        && !matches!(params.backing, MappingBacking::File { .. })
 }
 
 /// Per-mapping fault counters, exposed via `Inspect`.
@@ -358,30 +363,29 @@ impl MapperTask {
         // eagerly at build time instead.
         let deferred_protect = soft_lp.as_ref().is_some_and(SoftLp::deferred_protect);
 
-        let private = match &params.backing {
+        let unshareable_ram = is_unshareable_ram(&params);
+
+        match &params.backing {
             MappingBacking::File {
                 mappable,
                 file_offset,
             } => {
                 self.map_file(&params, mappable, *file_offset, deferred_protect)?;
-                false
             }
             MappingBacking::FileCopy {
                 mappable,
                 file_offset,
             } => {
                 self.map_file_copy(&params, mappable, *file_offset)?;
-                true
             }
             MappingBacking::Private => {
                 self.map_private(&params, deferred_protect)?;
-                true
             }
-        };
+        }
         self.inner.record_mapping(
             params.range,
             MappingProps {
-                private,
+                unshareable_ram,
                 stats: FaultStats::default(),
                 soft_lp,
             },
@@ -928,11 +932,15 @@ unsafe impl GuestMemoryAccess for VaMapper {
     }
 
     fn sharing(&self) -> Option<GuestMemorySharing> {
-        // Private anonymous memory is committed on fault in the local process
-        // and cannot be shared to a remote DMA process, so disable DMA sharing
-        // whenever any recorded mapping is private. Derived from the mapping
-        // index rather than a static flag so it tracks the actual backings.
-        if self.inner.mappings.read().iter().any(|(_, p)| p.private) {
+        // Private or copy-on-write RAM cannot be shared with a remote DMA
+        // process. Private device mappings do not affect sharing of RAM.
+        if self
+            .inner
+            .mappings
+            .read()
+            .iter()
+            .any(|(_, p)| p.unshareable_ram)
+        {
             return None;
         }
         Some(GuestMemorySharing::new(DmaRegionProvider {
@@ -997,7 +1005,22 @@ impl ResolveMemoryFault for VaMapper {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use sparse_mmap::SparseMapping;
+
+    #[test]
+    fn private_device_memory_does_not_disable_ram_sharing() {
+        let params = |mapping_type| MappingParams {
+            range: MemoryRange::new(0..0x1000),
+            backing: MappingBacking::Private,
+            writable: true,
+            mapping_type,
+            policy: MemoryPolicy::none(),
+        };
+
+        assert!(!is_unshareable_ram(&params(MappingType::Device)));
+        assert!(is_unshareable_ram(&params(MappingType::Ram)));
+    }
 
     /// Tests that private RAM pages can be allocated, written to, and read from.
     #[test]
