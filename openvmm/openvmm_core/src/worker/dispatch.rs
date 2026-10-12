@@ -1501,8 +1501,10 @@ impl InitializedVm {
             region
                 .map(0, &mappable, 0, len, false)
                 .context("failed to map NVDIMM backing file")?;
+            // MSHV requires a writable partition slot for this device even
+            // though the host mapping and guest-visible NVDIMM are read-only.
             control
-                .map_to_guest(range.start(), false)
+                .map_to_guest(range.start(), true)
                 .context("failed to map NVDIMM into guest address space")?;
             nvdimm_acpi.push(NvdimmAcpiConfig {
                 range: *range,
