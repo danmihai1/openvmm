@@ -1499,12 +1499,12 @@ impl InitializedVm {
                 .new_region(len, format!("nvdimm{index}"))
                 .context("failed to create NVDIMM memory region")?;
             region
-                .map(0, &mappable, 0, len, false)
+                .map_cow(0, &mappable, 0, len)
                 .context("failed to map NVDIMM backing file")?;
-            // MSHV requires a writable partition slot for this device even
-            // though the host mapping and guest-visible NVDIMM are read-only.
+            // MSHV needs a writable-capable host VMA, but a read-only slot
+            // prevents guest reads from faulting private COW pages.
             control
-                .map_to_guest(range.start(), true)
+                .map_to_guest(range.start(), false)
                 .context("failed to map NVDIMM into guest address space")?;
             nvdimm_acpi.push(NvdimmAcpiConfig {
                 range: *range,
