@@ -86,7 +86,7 @@ use pal_async::DefaultPool;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use scsidisk_resources::SimpleScsiDiskHandle;
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
@@ -1809,8 +1809,13 @@ async fn build_pcie_device(
             let vmservice::VirtioDevice { kind } = virtio;
             match kind {
                 Some(vmservice::virtio_device::Kind::Pmem(vmservice::VirtioPmem { path })) => {
-                    let file = File::open(&path)
-                        .with_context(|| format!("failed to open NVDIMM backing file {path}"))?;
+                    let file = OpenOptions::new()
+                        .read(true)
+                        .write(true)
+                        .open(&path)
+                        .with_context(|| {
+                            format!("failed to open NVDIMM backing file read/write: {path}")
+                        })?;
                     let metadata = file
                         .metadata()
                         .with_context(|| format!("failed to inspect NVDIMM backing file {path}"))?;
@@ -1866,7 +1871,7 @@ fn build_vfio_device(vfio: vmservice::VfioDevice) -> anyhow::Result<Resource<Pci
         .context("invalid iommu_group symlink")?
         .parse()
         .context("failed to parse IOMMU group ID")?;
-    let group = std::fs::OpenOptions::new()
+    let group = OpenOptions::new()
         .read(true)
         .write(true)
         .open(format!("/dev/vfio/{group_id}"))
