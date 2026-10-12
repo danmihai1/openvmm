@@ -1493,16 +1493,15 @@ impl InitializedVm {
         let mut nvdimm_regions = Vec::with_capacity(cfg.nvdimms.len());
         for (index, (nvdimm, range)) in cfg.nvdimms.iter().zip(&nvdimm_ranges).enumerate() {
             let len = usize::try_from(nvdimm.len).context("NVDIMM size does not fit usize")?;
-            let mappable = sparse_mmap::new_mappable_from_file(&nvdimm.file, true, true)
+            let mappable = sparse_mmap::new_mappable_from_file(&nvdimm.file, false, true)
                 .context("failed to create NVDIMM file mapping")?;
             let (mut control, region) = mapper
                 .new_region(len, format!("nvdimm{index}"))
                 .context("failed to create NVDIMM memory region")?;
             region
-                .map(0, &mappable, 0, len, true)
+                .map_cow(0, &mappable, 0, len)
                 .context("failed to map NVDIMM backing file")?;
-            // MSHV needs a writable-capable host VMA. The read-only partition
-            // slot and NFIT state prevent the guest from modifying the image.
+            // MSHV needs a writable-capable host VMA even for a read-only slot.
             control
                 .map_to_guest(range.start(), false)
                 .context("failed to map NVDIMM into guest address space")?;

@@ -1809,13 +1809,8 @@ async fn build_pcie_device(
             let vmservice::VirtioDevice { kind } = virtio;
             match kind {
                 Some(vmservice::virtio_device::Kind::Pmem(vmservice::VirtioPmem { path })) => {
-                    let file = OpenOptions::new()
-                        .read(true)
-                        .write(true)
-                        .open(&path)
-                        .with_context(|| {
-                            format!("failed to open NVDIMM backing file read/write: {path}")
-                        })?;
+                    let file = File::open(&path)
+                        .with_context(|| format!("failed to open NVDIMM backing file {path}"))?;
                     let metadata = file
                         .metadata()
                         .with_context(|| format!("failed to inspect NVDIMM backing file {path}"))?;
