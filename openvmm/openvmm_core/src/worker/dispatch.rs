@@ -1499,10 +1499,10 @@ impl InitializedVm {
                 .new_region(len, format!("nvdimm{index}"))
                 .context("failed to create NVDIMM memory region")?;
             region
-                .map_cow(0, &mappable, 0, len)
+                .map(0, &mappable, 0, len, false)
                 .context("failed to map NVDIMM backing file")?;
             control
-                .map_to_guest(range.start(), true)
+                .map_to_guest(range.start(), false)
                 .context("failed to map NVDIMM into guest address space")?;
             nvdimm_acpi.push(NvdimmAcpiConfig {
                 range: *range,
